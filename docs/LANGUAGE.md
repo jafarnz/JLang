@@ -313,6 +313,17 @@ runtime error (line 2): division by zero
 Exit codes of `jlang`: `0` ok, `64` bad usage, `65` compile error, `66` file not
 found, `70` runtime error.
 
+## Native code
+
+`jlang emu` and `jlang build` compile a program to RISC-V machine code instead of running it on the VM. Native code supports the whole language except the parts that need a heap: `alloc`, `free`, `len`, `read16`, `read32`, `write16`, `write32`, indexing strings, `mem`, `memmap`, `capture`, `ask` and `speak` are compile errors. Two built-ins exist for native code:
+
+| Function | Description |
+|---|---|
+| `mmio_read32(addr)` / `mmio_write32(addr, v)` | read or write a 32-bit hardware register; `mmio_read8` and `mmio_write8` do the same for one byte |
+| `asm(text)` | insert RISC-V instructions; separate them with `;` or newlines; the text must be a string literal |
+
+The VM simulates the same registers as the emulator, so `mmio_*` also works with `jlang run`; `asm` only works in native code. Inline assembly may use the temporary registers `t0`–`t6` and `a0`–`a7` freely, but must leave `s0`, `s1` and `sp` as it found them, because JLang uses them for its stacks.
+
 ## Limits
 
 Defaults, all changeable when building JLang (see `src/common.h`):

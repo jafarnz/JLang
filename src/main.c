@@ -18,6 +18,8 @@
 
 #include "board_sim.h"
 #include "jlang.h"
+#include "rv.h"
+#include "rv_codegen.h"
 
 enum {
     EXIT_USAGE = 64,
@@ -35,6 +37,10 @@ typedef struct {
     uint64_t max_cycles;
     bool stats;
     bool no_leak_check;
+    const char *out_path;
+    bool listing;
+    bool print_asm;
+    const char *bin_path;
     const char *emits[MAX_EMITS];
     int emit_count;
     BoardSimOptions board;
@@ -51,6 +57,9 @@ static void usage(FILE *f) {
         "  jlang xray <file.jlang>       run, showing every instruction and the stack\n"
         "  jlang dis <file.jlang>        print the compiled bytecode\n"
         "  jlang repl                    interactive prompt\n"
+        "  jlang emu <file.jlang>        compile to RISC-V and run it on the built-in emulator\n"
+        "  jlang build <file.jlang>      compile to RISC-V assembly for a real board (-o out.s)\n"
+        "  jlang asm <file.s>            assemble RISC-V assembly and run it on the emulator\n"
         "  jlang version\n"
         "\n"
         "options for run / xray:\n"
@@ -61,7 +70,14 @@ static void usage(FILE *f) {
         "  --max-cycles <n>              stop after n instructions (catches endless loops)\n"
         "  --realtime                    make delay() actually wait\n"
         "  --stats                       print instruction counts and heap use\n"
-        "  --no-leak-check               don't report unfreed memory at exit\n",
+        "  --no-leak-check               don't report unfreed memory at exit\n"
+        "\n"
+        "options for emu / build:\n"
+        "  --emit, --pin, --max-cycles   as for run (emu only)\n"
+        "  --asm                         print the generated assembly instead of running\n"
+        "  --listing                     print addresses and machine code for every instruction\n"
+        "  -o <file.s>                   where build writes the assembly\n"
+        "  --bin <file>                  write the raw memory image instead of running (emu)\n",
         JL_DEFAULT_HEAP);
 }
 
@@ -109,6 +125,14 @@ static bool parse_args(int argc, char **argv, Options *o) {
             o->board.realtime = true;
         } else if (strcmp(a, "--no-leak-check") == 0) {
             o->no_leak_check = true;
+        } else if (strcmp(a, "--listing") == 0) {
+            o->listing = true;
+        } else if (strcmp(a, "--asm") == 0) {
+            o->print_asm = true;
+        } else if (strcmp(a, "--bin") == 0 && has_value) {
+            o->bin_path = argv[++i];
+        } else if (strcmp(a, "-o") == 0 && has_value) {
+            o->out_path = argv[++i];
         } else if (strcmp(a, "--emit") == 0 && has_value) {
             if (o->emit_count == MAX_EMITS) {
                 fprintf(stderr, "jlang: too many --emit options\n");
@@ -208,6 +232,140 @@ static int run_file(const Options *o, bool xray) {
     fflush(stdout);
     jl_free(vm);
     free(src);
+    return code;
+}
+
+/* ---- jlang emu / jlang build (RISC-V) -------------------------------- */
+
+static void write_stdout(void *ud, const char *d, size_t n) {
+    (void)ud;
+    fwrite(d, 1, n, stdout);
+}
+
+static void write_stderr(void *ud, const char *d, size_t n) {
+    (void)ud;
+    fflush(stdout);
+    fwrite(d, 1, n, stderr);
+}
+
+static int native(const Options *o, bool emulate) {
+    char *src = read_file(o->file);
+    if (src == NULL) {
+        fprintf(stderr, "jlang: can't read '%s': %s\n", o->file, strerror(errno));
+        return EXIT_NOFILE;
+    }
+    JlVM *vm = make_vm(o);
+    if (vm == NULL) {
+        free(src);
+        return EXIT_RUNTIME;
+    }
+    RvGenOptions gen = {emulate, (const char **)o->emits, o->emit_count};
+    char *assembly = rv_generate(vm, src, &gen);
+    jl_free(vm);
+    free(src);
+    if (assembly == NULL) return EXIT_COMPILE;
+
+    if (o->print_asm) {
+        fputs(assembly, stdout);
+        free(assembly);
+        return 0;
+    }
+
+    RvImage img;
+    if (!rv_assemble(assembly, &img, o->listing, !emulate)) {
+        fprintf(stderr, "%s\n", img.error);
+        free(assembly);
+        return EXIT_COMPILE;
+    }
+    if (o->listing && img.listing) fputs(img.listing, stdout);
+
+    int code = 0;
+    if (o->bin_path) {
+        /* raw memory image from address 0 (code, constants, data) */
+        FILE *f = fopen(o->bin_path, "wb");
+        if (f == NULL) {
+            fprintf(stderr, "jlang: can't write '%s': %s\n", o->bin_path, strerror(errno));
+            code = EXIT_USAGE;
+        } else {
+            uint32_t end = img.size;
+            uint32_t bss;
+            if (rv_symbol(&img, "jl_vstack", &bss)) end = bss;
+            fwrite(img.image, 1, end, f);
+            fclose(f);
+        }
+    } else if (emulate) {
+        if (!o->listing) {
+            RvRunOptions run;
+            memset(&run, 0, sizeof run);
+            for (int i = 0; i < 32; i++) run.pin_inputs[i] = o->board.pin_inputs[i];
+            run.max_cycles = o->max_cycles;
+            run.out = write_stdout;
+            run.err = write_stderr;
+            uint64_t cycles = 0;
+            code = rv_run(&img, &run, &cycles);
+            fflush(stdout);
+            if (o->stats) {
+                fprintf(stderr, "--- stats ---\nRISC-V instructions executed: %llu\ncode size: %u bytes\n",
+                        (unsigned long long)cycles, img.text_size);
+            }
+        }
+    } else {
+        char path[1024];
+        if (o->out_path) {
+            snprintf(path, sizeof path, "%s", o->out_path);
+        } else {
+            snprintf(path, sizeof path, "%s", o->file);
+            char *dot = strrchr(path, '.');
+            if (dot && !strchr(dot, '/')) *dot = '\0';
+            strncat(path, ".s", sizeof path - strlen(path) - 1);
+        }
+        FILE *f = fopen(path, "w");
+        if (f == NULL) {
+            fprintf(stderr, "jlang: can't write '%s': %s\n", path, strerror(errno));
+            code = EXIT_USAGE;
+        } else {
+            fputs(assembly, f);
+            fclose(f);
+            if (!o->listing) {
+                printf("wrote %s (%u bytes of RV32IM code)\n", path, img.text_size);
+            }
+        }
+    }
+    rv_image_free(&img);
+    free(assembly);
+    return code;
+}
+
+/* jlang asm file.s: assemble RISC-V assembly and run it on the emulator */
+static int run_assembly(const Options *o) {
+    char *src = read_file(o->file);
+    if (src == NULL) {
+        fprintf(stderr, "jlang: can't read '%s': %s\n", o->file, strerror(errno));
+        return EXIT_NOFILE;
+    }
+    RvImage img;
+    bool ok = rv_assemble(src, &img, o->listing, false);
+    free(src);
+    if (!ok) {
+        fprintf(stderr, "%s\n", img.error);
+        return EXIT_COMPILE;
+    }
+    int code = 0;
+    if (o->listing) {
+        if (img.listing) fputs(img.listing, stdout);
+    } else {
+        RvRunOptions run;
+        memset(&run, 0, sizeof run);
+        for (int i = 0; i < 32; i++) run.pin_inputs[i] = o->board.pin_inputs[i];
+        run.max_cycles = o->max_cycles;
+        run.out = write_stdout;
+        run.err = write_stderr;
+        uint64_t cycles = 0;
+        code = rv_run(&img, &run, &cycles);
+        fflush(stdout);
+        if (o->stats) fprintf(stderr, "--- stats ---\nRISC-V instructions executed: %llu\n", (unsigned long long)cycles);
+    }
+    rv_image_free(&img);
     return code;
 }
 
@@ -402,7 +560,8 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "repl") == 0) return repl(&o);
 
     bool known = strcmp(cmd, "run") == 0 || strcmp(cmd, "xray") == 0 ||
-                 strcmp(cmd, "check") == 0 || strcmp(cmd, "dis") == 0;
+                 strcmp(cmd, "check") == 0 || strcmp(cmd, "dis") == 0 ||
+                 strcmp(cmd, "emu") == 0 || strcmp(cmd, "build") == 0 || strcmp(cmd, "asm") == 0;
     if (!known) {
         fprintf(stderr, "jlang: unknown command '%s'\n\n", cmd);
         usage(stderr);
@@ -413,6 +572,9 @@ int main(int argc, char **argv) {
         return EXIT_USAGE;
     }
     if (strcmp(cmd, "run") == 0) return run_file(&o, false);
+    if (strcmp(cmd, "emu") == 0) return native(&o, true);
+    if (strcmp(cmd, "asm") == 0) return run_assembly(&o);
+    if (strcmp(cmd, "build") == 0) return native(&o, false);
     if (strcmp(cmd, "xray") == 0) return run_file(&o, true);
     if (strcmp(cmd, "check") == 0) return compile_only(&o, false);
     return compile_only(&o, true);

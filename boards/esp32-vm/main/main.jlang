@@ -1,0 +1,12 @@
+// Runs on the device. Change it and reflash, or load it from an SD card.
+let LED = 2
+pin_mode(LED, "out")
+let on = 0
+
+on button {
+    on = 1 - on
+    pin_write(LED, on)
+    printf("button: LED {}\n", on)
+}
+
+print("JLang is running")

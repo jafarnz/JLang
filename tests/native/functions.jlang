@@ -1,0 +1,30 @@
+// Functions as values, recursion and printf, compiled to RISC-V.
+fn fact(n) { if n <= 1 { return 1 } return n * fact(n - 1) }
+fn twice(f, x) { return f(f(x)) }
+fn inc(x) { return x + 1 }
+let g = inc
+g = fact
+print(fact(10), twice(inc, 5), g(5))         // expect: 3628800 7 120
+printf("[{d6}] [{x4}] [{b8}] [{c}]\n", -42, 255, 5, 'J')  // expect: [   -42] [0x00FF] [0b00000101] [J]
+let total = 0
+for i in 0..100 {
+    if i % 3 == 0 { continue }
+    if i > 50 { break }
+    total += i
+}
+print(total, 7 > 3 && 2 > 1, false || nil == nil)  // expect: 867 true true
+// a variable reassigned inside a loop must call whatever it holds now
+let h = inc
+let r = 0
+for i in 0..3 {
+    r = h(r)
+    h = fact
+}
+print(r)                                  // expect: 1
+let name = "first"
+for i in 0..2 {
+    print(name)
+    name = "second"
+}
+// expect: first
+// expect: second

@@ -1,0 +1,79 @@
+/*
+ * rv.h - JLang's RISC-V toolchain: assembler, emulator and code generator.
+ *
+ * JLang can compile a program to RV32IM machine code instead of running
+ * it on the bytecode VM. The pipeline is:
+ *
+ *   source -> bytecode (compiler.c) -> RISC-V assembly (rv_codegen.c)
+ *          -> machine code (rv_asm.c) -> emulator (rv_emu.c) or a real chip
+ *
+ * The assembly is plain GNU syntax, so it also builds with the standard
+ * riscv-*-elf toolchain for real boards.
+ *
+ * The simulated board used by the emulator (and by the VM's mmio_* built-ins)
+ * has this memory map:
+ */
+#ifndef JL_RV_H
+#define JL_RV_H
+
+#include "common.h"
+
+#define RV_RAM_SIZE (1u << 20) /* 1 MB of RAM starting at address 0 */
+
+#define RV_UART_TX    0x10000000u /* write a byte to print it */
+#define RV_GPIO_DIR   0x10001000u /* bit n = 1: pin n is an output */
+#define RV_GPIO_PULL  0x10001004u /* bit n = 1: pin n has a pull-up */
+#define RV_GPIO_OUT   0x10001008u /* bit n = level driven on pin n */
+#define RV_GPIO_IN    0x1000100Cu /* bit n = level read from pin n */
+#define RV_TIMER_MS   0x10002000u /* read: milliseconds since start */
+#define RV_TIMER_WAIT 0x10002004u /* write n: wait n milliseconds */
+#define RV_EXIT       0x10003000u /* write a code to stop the program */
+
+/* ---- assembler -------------------------------------------------------- */
+
+typedef struct {
+    char name[64];
+    uint32_t addr;
+} RvSymbol;
+
+typedef struct {
+    uint32_t addr;
+    int line; /* JLang source line, from "# @line N" comments */
+} RvLine;
+
+typedef struct {
+    uint8_t *image;     /* memory contents, starting at address 0 */
+    uint32_t size;      /* bytes used, including .bss */
+    uint32_t text_size;
+    RvSymbol *syms;
+    int nsyms;
+    RvLine *lines;
+    int nlines;
+    char *listing;      /* optional: "addr  bytes  source" lines */
+    char error[320];
+} RvImage;
+
+/* Assembles GNU-style RV32IM source. With allow_undefined, unknown
+ * symbols resolve to 0 (useful for listings of hardware builds). */
+bool rv_assemble(const char *src, RvImage *out, bool want_listing, bool allow_undefined);
+void rv_image_free(RvImage *img);
+bool rv_symbol(const RvImage *img, const char *name, uint32_t *addr);
+int rv_line_for(const RvImage *img, uint32_t addr);
+
+/* ---- emulator --------------------------------------------------------- */
+
+typedef void (*RvWriteFn)(void *ud, const char *data, size_t len);
+
+typedef struct {
+    uint64_t max_cycles;     /* 0 = no limit */
+    int pin_inputs[32];      /* value an input pin reads, -1 = default */
+    RvWriteFn out;
+    RvWriteFn err;
+    void *ud;
+} RvRunOptions;
+
+/* Runs an assembled image from symbol `_start`. Returns the exit code
+ * written to RV_EXIT, or 70 after a fault (reported through err). */
+int rv_run(const RvImage *img, const RvRunOptions *opt, uint64_t *cycles_out);
+
+#endif

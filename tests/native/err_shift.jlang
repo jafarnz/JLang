@@ -1,0 +1,4 @@
+// exit: 70
+let n = 40
+print(1 << n)
+// expect: runtime error (line 3): shift amount 40 is out of range (it must be 0..31)

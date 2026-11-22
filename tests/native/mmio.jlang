@@ -1,0 +1,14 @@
+// Driving the simulated board through its registers instead of pin_write.
+let UART = 0x1000_0000
+let GPIO_DIR = 0x1000_1000
+let GPIO_OUT = 0x1000_1008
+let TIMER_WAIT = 0x1000_2004
+let TIMER_MS = 0x1000_2000
+
+for c in 'A'..'D' { mmio_write32(UART, c) }
+mmio_write32(UART, '\n')                  // expect: ABC
+mmio_write32(GPIO_DIR, 1 << 5)            // pin 5 is an output
+mmio_write32(GPIO_OUT, 1 << 5)            // expect: [sim      0ms] pin 5 -> HIGH
+mmio_write32(TIMER_WAIT, 250)
+mmio_write32(GPIO_OUT, 0)                 // expect: [sim    250ms] pin 5 -> LOW
+print(mmio_read32(TIMER_MS))              // expect: 250

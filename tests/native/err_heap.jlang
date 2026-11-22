@@ -1,0 +1,3 @@
+// exit: 65
+let b = alloc(4)
+// expect: error (line 2): alloc() isn't available in native code yet (native programs have no heap or camera); run it with `jlang run` instead

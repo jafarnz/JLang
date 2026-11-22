@@ -396,6 +396,14 @@ static bool bi_emit(JlVM *vm, int argc, Value *args, Value *out) {
     return r == JL_OK; /* errors inside the handler were already reported */
 }
 
+static bool bi_asm(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    (void)args;
+    (void)out;
+    return jl_error(vm, "asm() only works in native code. Run the program with "
+                        "`jlang emu` or build it with `jlang build`");
+}
+
 void jl_register_core(JlVM *vm) {
     jl_register_native(vm, "print", bi_print, -1);
     jl_register_native(vm, "printf", bi_printf, -1);
@@ -415,4 +423,5 @@ void jl_register_core(JlVM *vm) {
     jl_register_native(vm, "assert", bi_assert, -1);
     jl_register_native(vm, "cycles", bi_cycles, 0);
     jl_register_native(vm, "emit", bi_emit, 1);
+    jl_register_native(vm, "asm", bi_asm, 1);
 }

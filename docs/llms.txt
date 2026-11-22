@@ -43,6 +43,13 @@ print(...) · printf(fmt, ...) placeholders {} {d} {x} {b} {c} with optional wid
 ## Board built-ins (simulated on desktop, real on device)
 pin_mode(pin, "out"|"in"|"in_pullup") · pin_write(pin, 0|1) (pin must be "out") · pin_read(pin) (pin must be an input) · delay(ms) (virtual time) · millis() · capture() -> buf (free it) · ask(photo_buf, question_str) -> str (free it) · speak(text, lang="en")
 
+## Native code (RISC-V)
+- `jlang emu FILE [--emit EVENT] [--asm] [--listing]` compiles to RV32IM and runs on the built-in emulator. `jlang build FILE -o out.s` writes assembly for a real board, which links with a C file implementing boards/jl_hal.h. `jlang asm FILE.s` assembles and runs hand-written assembly.
+- Native code supports ints, bools, string literals and string variables, functions (also as values), loops, bits and slices, events, print/printf, pins, delay/millis, u8/i8/u16/i16, assert, cycles(). It has no heap: alloc/free/len/read32/write32, string indexing, mem/memmap and capture/ask/speak are compile errors.
+- `mmio_read32(addr)`, `mmio_write32(addr, v)`, `mmio_read8`, `mmio_write8` access hardware registers (also simulated by `jlang run`). Simulated board map: UART 0x10000000 (write a byte), GPIO_DIR 0x10001000, GPIO_PULL 0x10001004, GPIO_OUT 0x10001008, GPIO_IN 0x1000100C, TIMER_MS 0x10002000, TIMER_WAIT 0x10002004.
+- `asm("li t0, 1; addi t0, t0, 2")` inserts RISC-V instructions (native only; `;` separates instructions; the string must be a literal). Registers s0, s1 and sp belong to JLang and must be restored.
+- Native runtime errors print `runtime error (line L): message` and stop the program.
+
 ## Example
 ```
 let LED = 2

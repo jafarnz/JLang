@@ -16,6 +16,9 @@ $(BIN): $(SRC) $(HDR)
 
 test: $(BIN)
 	@./tests/run.sh $(BIN)
+	@./tests/native.sh $(BIN)
+	@./tests/gnu.sh $(BIN)
+	@./tests/board.sh $(BIN)
 
 # Build with AddressSanitizer + UndefinedBehaviorSanitizer and run the
 # tests: catches memory bugs in JLang itself.
@@ -24,6 +27,7 @@ sanitize:
 	$(CC) -std=c99 -g -O1 -Wall -Wextra -fsanitize=address,undefined \
 		-fno-omit-frame-pointer -o build/jlang-san $(SRC)
 	@./tests/run.sh build/jlang-san
+	@./tests/native.sh build/jlang-san
 
 # WebAssembly build for the browser playground (needs clang + wasi-libc).
 WASI_SYSROOT ?= /usr

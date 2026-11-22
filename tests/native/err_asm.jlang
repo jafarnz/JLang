@@ -1,0 +1,4 @@
+// exit: 65
+print("before")
+asm("addi t0, t0")
+// expect: error (line 3): in assembly: 'addi' takes 3 operands, got 2

@@ -12,6 +12,8 @@
 
 #include "../src/board_sim.h"
 #include "../src/jlang.h"
+#include "../src/rv.h"
+#include "../src/rv_codegen.h"
 
 #define EXPORT(name) __attribute__((export_name(#name)))
 #define OUTPUT_MAX (512u * 1024u)
@@ -68,7 +70,8 @@ EXPORT(jlw_output) const char *jlw_output(void) { return out_buf; }
 EXPORT(jlw_output_len) size_t jlw_output_len(void) { return out_len; }
 
 /*
- * mode:    0 = run, 1 = xray, 2 = dis, 3 = check
+ * mode:    0 = run, 1 = xray, 2 = dis, 3 = check,
+ *          4 = RISC-V assembly, 5 = run on the RISC-V emulator
  * emits:   event names separated by '\n' (may be empty)
  * pins:    "4=1,5=0" (may be empty)
  * answer:  reply of the simulated ask() (empty = default)
@@ -107,6 +110,55 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     board_sim_register(vm, &opt);
 
     int code = 0;
+    if (mode == 4 || mode == 5) {
+        const char *events[64];
+        int nevents = 0;
+        static char names[64][32];
+        for (const char *p = emits; p != NULL && *p && nevents < 64;) {
+            const char *nl = strchr(p, '\n');
+            size_t n = nl ? (size_t)(nl - p) : strlen(p);
+            if (n > 0 && n < 32) {
+                memcpy(names[nevents], p, n);
+                names[nevents][n] = '\0';
+                events[nevents] = names[nevents];
+                nevents++;
+            }
+            p = nl ? nl + 1 : NULL;
+        }
+        RvGenOptions gen = {true, events, nevents};
+        char *assembly = rv_generate(vm, src, &gen);
+        jl_free(vm);
+        if (assembly == NULL) return 65;
+        if (mode == 4) {
+            write_out(NULL, assembly, strlen(assembly));
+            free(assembly);
+            return 0;
+        }
+        RvImage img;
+        if (!rv_assemble(assembly, &img, false, false)) {
+            write_err(NULL, img.error, strlen(img.error));
+            write_err(NULL, "\n", 1);
+            free(assembly);
+            return 65;
+        }
+        free(assembly);
+        RvRunOptions run;
+        memset(&run, 0, sizeof run);
+        for (int i = 0; i < 32; i++) run.pin_inputs[i] = opt.pin_inputs[i];
+        run.max_cycles = 200000000;
+        run.out = write_out;
+        run.err = write_err;
+        uint64_t cycles = 0;
+        code = rv_run(&img, &run, &cycles);
+        if (stats) {
+            char msg[128];
+            int m = snprintf(msg, sizeof msg, "RISC-V instructions executed: %llu, code size: %u bytes\n",
+                             (unsigned long long)cycles, img.text_size);
+            write_err(NULL, msg, (size_t)m);
+        }
+        rv_image_free(&img);
+        return code;
+    }
     if (mode == 2 || mode == 3) {
         JlResult r = jl_disassemble_or_check(vm, src, mode == 2);
         if (r != JL_OK) code = 65;

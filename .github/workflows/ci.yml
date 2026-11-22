@@ -8,6 +8,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install -y binutils-riscv64-unknown-elf gcc-riscv64-unknown-elf
       - run: make
       - run: make test
       - run: make sanitize

@@ -115,7 +115,13 @@ The core ones are in `builtins.c`. Hardware ones belong to the **host**:
 `board_sim.c` is the desktop host; device firmware registers its own versions of
 the same functions. See [EMBEDDING.md](EMBEDDING.md).
 
-## 9. Design choices
+## 9. Native code (`rv_codegen.c`, `rv_asm.c`, `rv_emu.c`)
+
+The RISC-V back end reuses everything up to the bytecode, then translates each function's bytecode into RV32IM assembly. Values live on the same kind of stack as in the VM, kept in memory with `s1` as its pointer and `s0` pointing at the current call's slots, so each bytecode instruction becomes a short, predictable sequence of RISC-V instructions. Types are tracked at compile time, which tells `print` whether a word is a number, a boolean or the address of a string, and turns most calls into direct `call` instructions. Checks that the VM performs at run time, such as division by zero or a bit range that doesn't fit, become a compare-and-branch to a small routine that prints the same error message with the JLang line number.
+
+The assembler makes two passes over the text: the first measures every line and records where each label lands, the second encodes instructions now that every address is known. The emulator fetches, decodes and executes one instruction at a time and maps the peripheral registers above `0x10000000` onto the simulated board. Hardware access in compiled programs goes through seven functions (`jl_hal_*`), which the emulator build generates in assembly and a real board provides in C.
+
+## 10. Design choices
 
 | Choice | Why |
 |---|---|

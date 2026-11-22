@@ -15,6 +15,7 @@
 #include <time.h>
 
 #include "board_sim.h"
+#include "rv.h"
 
 enum { MODE_UNSET, MODE_OUT, MODE_IN, MODE_IN_PULLUP };
 
@@ -186,6 +187,120 @@ static bool sim_speak(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* ---- memory-mapped I/O --------------------------------------------- */
+/* The same registers as the RISC-V emulator (see rv.h), so code that
+ * drives hardware through registers runs the same way in both. */
+
+static bool get_addr(JlVM *vm, const char *fn, Value v, uint32_t *addr) {
+    int32_t a;
+    if (!jl_get_int(vm, fn, 1, v, &a)) return false;
+    *addr = (uint32_t)a;
+    return true;
+}
+
+static uint32_t sim_gpio_bits(int want_mode) {
+    uint32_t v = 0;
+    for (int pin = 0; pin < 32; pin++) {
+        bool on;
+        if (want_mode == MODE_OUT) on = sim.mode[pin] == MODE_OUT;
+        else if (want_mode == MODE_IN_PULLUP) on = sim.mode[pin] == MODE_IN_PULLUP;
+        else on = sim.level[pin] != 0;
+        if (on) v |= 1u << pin;
+    }
+    return v;
+}
+
+static bool mmio_read(JlVM *vm, uint32_t addr, uint32_t *v) {
+    switch (addr) {
+    case RV_GPIO_DIR: *v = sim_gpio_bits(MODE_OUT); return true;
+    case RV_GPIO_PULL: *v = sim_gpio_bits(MODE_IN_PULLUP); return true;
+    case RV_GPIO_OUT: *v = sim_gpio_bits(-1); return true;
+    case RV_GPIO_IN: {
+        uint32_t r = 0;
+        for (int pin = 0; pin < 32; pin++) {
+            int level;
+            if (sim.mode[pin] == MODE_OUT) level = sim.level[pin];
+            else if (sim.opt.pin_inputs[pin] >= 0) level = sim.opt.pin_inputs[pin];
+            else level = sim.mode[pin] == MODE_IN_PULLUP;
+            if (level) r |= 1u << pin;
+        }
+        *v = r;
+        return true;
+    }
+    case RV_TIMER_MS: *v = sim.now_ms; return true;
+    case RV_UART_TX: case RV_TIMER_WAIT: *v = 0; return true;
+    }
+    return jl_error(vm, "mmio_read32(): 0x%08X is not a register of the simulated board", addr);
+}
+
+static bool mmio_write(JlVM *vm, uint32_t addr, uint32_t v) {
+    switch (addr) {
+    case RV_UART_TX: {
+        char c = (char)(v & 0xFF);
+        jl_outf(vm, "%c", c);
+        return true;
+    }
+    case RV_GPIO_DIR:
+    case RV_GPIO_PULL:
+        for (int pin = 0; pin < 32; pin++) {
+            bool bit = (v >> pin) & 1u;
+            if (addr == RV_GPIO_DIR) {
+                if (bit) sim.mode[pin] = MODE_OUT;
+                else if (sim.mode[pin] == MODE_OUT) sim.mode[pin] = MODE_IN;
+            } else if (sim.mode[pin] != MODE_OUT) {
+                sim.mode[pin] = bit ? MODE_IN_PULLUP : MODE_IN;
+            }
+        }
+        return true;
+    case RV_GPIO_OUT:
+        for (int pin = 0; pin < 32; pin++) {
+            int level = (v >> pin) & 1u;
+            if (sim.mode[pin] == MODE_OUT && sim.level[pin] != level) {
+                jl_outf(vm, "[sim %6ums] pin %d -> %s\n", sim.now_ms, pin, level ? "HIGH" : "LOW");
+            }
+            sim.level[pin] = level;
+        }
+        return true;
+    case RV_TIMER_WAIT: advance_time(v); return true;
+    case RV_EXIT: return jl_error(vm, "the program wrote %u to the exit register", v);
+    }
+    return jl_error(vm, "mmio_write32(): 0x%08X is not a register of the simulated board", addr);
+}
+
+static bool sim_mmio_read32(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    uint32_t addr, v;
+    if (!get_addr(vm, "mmio_read32", args[0], &addr) || !mmio_read(vm, addr, &v)) return false;
+    *out = int_val((int32_t)v);
+    return true;
+}
+
+static bool sim_mmio_write32(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    (void)out;
+    uint32_t addr;
+    int32_t v;
+    if (!get_addr(vm, "mmio_write32", args[0], &addr) || !jl_get_int(vm, "mmio_write32", 2, args[1], &v)) return false;
+    return mmio_write(vm, addr, (uint32_t)v);
+}
+
+static bool sim_mmio_read8(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    uint32_t addr, v;
+    if (!get_addr(vm, "mmio_read8", args[0], &addr) || !mmio_read(vm, addr & ~3u, &v)) return false;
+    *out = int_val((int32_t)((v >> (8 * (addr & 3u))) & 0xFFu));
+    return true;
+}
+
+static bool sim_mmio_write8(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    (void)out;
+    uint32_t addr;
+    int32_t v;
+    if (!get_addr(vm, "mmio_write8", args[0], &addr) || !jl_get_int(vm, "mmio_write8", 2, args[1], &v)) return false;
+    return mmio_write(vm, addr, (uint32_t)v & 0xFFu);
+}
+
 void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     memset(&sim, 0, sizeof sim);
     sim.opt = *o;
@@ -197,4 +312,8 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     jl_register_native(vm, "capture", sim_capture, 0);
     jl_register_native(vm, "ask", sim_ask, 2);
     jl_register_native(vm, "speak", sim_speak, -1);
+    jl_register_native(vm, "mmio_read32", sim_mmio_read32, 1);
+    jl_register_native(vm, "mmio_write32", sim_mmio_write32, 2);
+    jl_register_native(vm, "mmio_read8", sim_mmio_read8, 1);
+    jl_register_native(vm, "mmio_write8", sim_mmio_write8, 2);
 }

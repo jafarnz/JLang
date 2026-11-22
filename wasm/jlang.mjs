@@ -5,7 +5,7 @@
 //
 // `output` is a list of { text, stream } pieces where stream is "out" or "err".
 
-const MODES = { run: 0, xray: 1, dis: 2, check: 3 }
+const MODES = { run: 0, xray: 1, dis: 2, check: 3, riscv: 4, emu: 5 }
 
 export async function loadJLang(source) {
   const stub = () => 0

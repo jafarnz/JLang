@@ -1,0 +1,10 @@
+// args: --emit tick --emit tick
+let count = 0
+on tick {
+    count += 1
+    printf("tick {}\n", count)
+}
+print("ready")
+// expect: ready
+// expect: tick 1
+// expect: tick 2
