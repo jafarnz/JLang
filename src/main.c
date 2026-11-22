@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "board_sim.h"
 #include "jlang.h"
@@ -70,7 +71,9 @@ static void usage(FILE *f) {
         "  --answer <text>               what the simulated ask() replies\n"
         "  --heap <bytes>                heap size (default %u)\n"
         "  --max-cycles <n>              stop after n instructions (catches endless loops)\n"
-        "  --realtime                    make delay() actually wait\n"
+        "  --realtime                    make delay() actually wait; in a terminal,\n"
+        "                                LED panel frames animate in place, in colour\n"
+        "  --panel <w>x<h>               LED panel size (default 60x7)\n"
         "  --stats                       print instruction counts and heap use\n"
         "  --no-leak-check               don't report unfreed memory at exit\n"
         "\n"
@@ -168,6 +171,17 @@ static bool parse_args(int argc, char **argv, Options *o) {
                 return false;
             }
             o->board.pin_inputs[pin] = val;
+        } else if (strcmp(a, "--panel") == 0 && has_value) {
+            int w, h;
+            char extra;
+            if (sscanf(argv[++i], "%dx%d%c", &w, &h, &extra) != 2 || w < 1 || h < 1 || w > PANEL_MAX_W ||
+                h > PANEL_MAX_H) {
+                fprintf(stderr, "jlang: --panel expects <width>x<height>, up to %dx%d, like --panel 32x8\n",
+                        PANEL_MAX_W, PANEL_MAX_H);
+                return false;
+            }
+            o->board.panel_w = w;
+            o->board.panel_h = h;
         } else if (strcmp(a, "--analog") == 0 && has_value) {
             int pin, val;
             char extra;
@@ -208,7 +222,9 @@ static JlVM *make_vm(const Options *o) {
         fprintf(stderr, "jlang: could not create the VM (out of memory?)\n");
         return NULL;
     }
-    board_sim_register(vm, &o->board);
+    BoardSimOptions board = o->board;
+    board.ansi_frames = board.realtime && isatty(STDOUT_FILENO);
+    board_sim_register(vm, &board);
     return vm;
 }
 
@@ -320,6 +336,9 @@ static int native(const Options *o, bool emulate) {
             run.max_cycles = o->max_cycles;
             run.out = write_stdout;
             run.err = write_stderr;
+            run.panel_w = o->board.panel_w;
+            run.panel_h = o->board.panel_h;
+            run.ansi_frames = o->board.realtime && isatty(STDOUT_FILENO);
             uint64_t cycles = 0;
             code = rv_run(&img, &run, &cycles);
             fflush(stdout);
@@ -379,6 +398,8 @@ static int run_assembly(const Options *o) {
         run.max_cycles = o->max_cycles;
         run.out = write_stdout;
         run.err = write_stderr;
+        run.panel_w = o->board.panel_w;
+        run.panel_h = o->board.panel_h;
         uint64_t cycles = 0;
         code = rv_run(&img, &run, &cycles);
         fflush(stdout);

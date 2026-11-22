@@ -23,6 +23,8 @@ typedef struct {
     /* board */
     uint32_t gpio_dir, gpio_pull, gpio_out;
     uint32_t now_ms;
+    Panel panel;
+    uint32_t led_xy;
 } Cpu;
 
 static void write_out(Cpu *c, const char *s, size_t n) {
@@ -60,6 +62,12 @@ static bool mmio_read(Cpu *c, uint32_t addr, uint32_t *v) {
     case RV_GPIO_OUT: *v = c->gpio_out; return true;
     case RV_GPIO_IN: *v = gpio_in(c); return true;
     case RV_TIMER_MS: *v = c->now_ms; return true;
+    case RV_LED_W: *v = (uint32_t)c->panel.w; return true;
+    case RV_LED_H: *v = (uint32_t)c->panel.h; return true;
+    case RV_LED_XY: *v = c->led_xy; return true;
+    case RV_LED_RGB:
+    case RV_LED_SHOW:
+    case RV_LED_CLEAR:
     case RV_UART_TX:
     case RV_TIMER_WAIT:
     case RV_EXIT: *v = 0; return true;
@@ -89,7 +97,26 @@ static bool mmio_write(Cpu *c, uint32_t addr, uint32_t v) {
         }
         return true;
     }
-    case RV_TIMER_WAIT: c->now_ms += v; return true;
+    case RV_TIMER_WAIT:
+        c->now_ms += v;
+        if (c->opt->max_ms && c->now_ms >= c->opt->max_ms && !c->halted) {
+            char buf[160];
+            int n = snprintf(buf, sizeof buf,
+                             "stopped after %u seconds of simulated time. On a board the program would keep running\n",
+                             (unsigned)(c->opt->max_ms / 1000));
+            if (c->opt->err) c->opt->err(c->opt->ud, buf, (size_t)n);
+            c->halted = true;
+            c->exit_code = 70;
+        }
+        return true;
+    case RV_LED_XY: c->led_xy = v; return true;
+    case RV_LED_RGB:
+        panel_set(&c->panel, (int16_t)(c->led_xy >> 16), (int16_t)(c->led_xy & 0xFFFF), v);
+        return true;
+    case RV_LED_SHOW: panel_show(&c->panel, c->now_ms, (JlPanelWriteFn)c->opt->out, c->opt->ud); return true;
+    case RV_LED_CLEAR: panel_clear(&c->panel); return true;
+    case RV_LED_W:
+    case RV_LED_H: return true;
     case RV_EXIT:
         c->halted = true;
         c->exit_code = (int)v;
@@ -282,6 +309,15 @@ int rv_run(const RvImage *img, const RvRunOptions *opt, uint64_t *cycles_out) {
     c.opt = opt;
     c.mem = calloc(1, RV_RAM_SIZE);
     if (c.mem == NULL) return 70;
+    if (!panel_init(&c.panel, opt->panel_w ? opt->panel_w : PANEL_DEFAULT_W,
+                    opt->panel_h ? opt->panel_h : PANEL_DEFAULT_H)) {
+        free(c.mem);
+        return 70;
+    }
+    c.panel.print = opt->frame_sink == NULL;
+    c.panel.ansi = opt->ansi_frames;
+    c.panel.sink = opt->frame_sink;
+    c.panel.sink_data = opt->frame_data;
     memcpy(c.mem, img->image, img->size);
 
     uint32_t entry;
@@ -289,6 +325,7 @@ int rv_run(const RvImage *img, const RvRunOptions *opt, uint64_t *cycles_out) {
         const char *msg = "runtime error: the program has no _start label\n";
         if (opt->err) opt->err(opt->ud, msg, strlen(msg));
         free(c.mem);
+        panel_free(&c.panel);
         return 70;
     }
     c.pc = entry;
@@ -310,5 +347,6 @@ int rv_run(const RvImage *img, const RvRunOptions *opt, uint64_t *cycles_out) {
     }
     if (cycles_out) *cycles_out = c.cycles;
     free(c.mem);
+    panel_free(&c.panel);
     return c.exit_code;
 }

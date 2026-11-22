@@ -1,0 +1,19 @@
+// led_text draws in the 5x7 font and returns where the text ends.
+// args: --panel 16x7
+let end = led_text("Hi", 1, 0, "white")
+print("ends at", end)
+led_text(7, end, 0, 0xFF0000)
+led_show()
+let size = led_size()
+print(size)
+free(size)
+// expect: ends at 13
+// expect: [sim      0ms] frame 1
+// expect: .#..#....#...###
+// expect: .#..#...........
+// expect: .####...##.....#
+// expect: .#..#....#.....#
+// expect: .#..#....#....#.
+// expect: .#..#...###...#.
+// expect: ................
+// expect: [16, 7]

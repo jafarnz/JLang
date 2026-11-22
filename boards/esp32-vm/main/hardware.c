@@ -9,10 +9,14 @@
  *   pressed(pin)                               a button to ground
  *   analog(pin)                                0..4095 from the ADC
  *   distance(trig, echo)                       HC-SR04 sensor, in cm
+ *   led(x, y, c), led_clear(), led_show(),     a WS2812 LED panel, set up
+ *   led_text(msg, x, y, c), led_width(),       with the PANEL_ settings below
+ *   led_height(), led_size()
  *
  * PWM uses the LEDC peripheral: timer 0 for brightness, timer 1 for
  * servos and timer 2 for tones. WS2812 LEDs use the RMT peripheral.
  */
+#include <stdio.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -27,6 +31,17 @@
 #include "led_strip.h"
 
 #define MAX_PWM 6      /* LEDC channels used, the minimum every ESP32 has */
+
+/* The LED panel. The common 8x32 WS2812 panels are wired in a zigzag: down
+   the first column, up the next, and so on. Set PANEL_ZIGZAG to 0 for a
+   panel wired row by row, left to right. */
+#define PANEL_PIN 2       /* the panel's DIN; GPIO 2 is D1 on a XIAO ESP32-S3 */
+#define PANEL_W 32
+#define PANEL_H 8
+#define PANEL_ZIGZAG 1
+/* Each LED at full white draws about 60 mA, so a whole panel would need more
+   than USB can give. Colours are scaled down to this many 255ths. */
+#define PANEL_BRIGHTNESS 24
 #define MAX_STRIPS 2
 #define STRIP_LEDS 64
 
@@ -324,6 +339,103 @@ static bool b_distance(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* ---- the LED panel -------------------------------------------------------------- */
+
+static uint32_t panel[PANEL_W * PANEL_H];
+static led_strip_handle_t panel_strip;
+
+static void panel_set(int x, int y, uint32_t rgb) {
+    if (x >= 0 && y >= 0 && x < PANEL_W && y < PANEL_H) panel[y * PANEL_W + x] = rgb;
+}
+
+static bool b_led(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t x, y;
+    uint32_t rgb;
+    if (!jl_get_int(vm, "led", 1, args[0], &x) || !jl_get_int(vm, "led", 2, args[1], &y) ||
+        !jl_hw_color(vm, "led", 3, args[2], &rgb))
+        return false;
+    panel_set(x, y, rgb);
+    return true;
+}
+
+static bool b_led_clear(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)vm, (void)argc, (void)args, (void)out;
+    memset(panel, 0, sizeof panel);
+    return true;
+}
+
+static bool b_led_show(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args, (void)out;
+    if (panel_strip == NULL) {
+        led_strip_config_t cfg = {
+            .strip_gpio_num = PANEL_PIN,
+            .max_leds = PANEL_W * PANEL_H,
+            .led_model = LED_MODEL_WS2812,
+            .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+        };
+        led_strip_rmt_config_t rmt = {.clk_src = RMT_CLK_SRC_DEFAULT, .resolution_hz = 10 * 1000 * 1000};
+        if (led_strip_new_rmt_device(&cfg, &rmt, &panel_strip) != ESP_OK)
+            return jl_error(vm, "led_show(): couldn't start the LED panel on GPIO %d", PANEL_PIN);
+    }
+    for (int x = 0; x < PANEL_W; x++) {
+        for (int y = 0; y < PANEL_H; y++) {
+            uint32_t c = panel[y * PANEL_W + x];
+            int i = PANEL_ZIGZAG ? x * PANEL_H + (x % 2 ? PANEL_H - 1 - y : y) : y * PANEL_W + x;
+            led_strip_set_pixel(panel_strip, (uint32_t)i, (c >> 16 & 0xFF) * PANEL_BRIGHTNESS / 255,
+                                (c >> 8 & 0xFF) * PANEL_BRIGHTNESS / 255, (c & 0xFF) * PANEL_BRIGHTNESS / 255);
+        }
+    }
+    led_strip_refresh(panel_strip);
+    return true;
+}
+
+static bool b_led_width(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)vm, (void)argc, (void)args;
+    *out = int_val(PANEL_W);
+    return true;
+}
+
+static bool b_led_height(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)vm, (void)argc, (void)args;
+    *out = int_val(PANEL_H);
+    return true;
+}
+
+static bool b_led_size(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args;
+    Value *items;
+    if (!jl_new_array(vm, 2, out, &items)) return false;
+    items[0] = int_val(PANEL_W);
+    items[1] = int_val(PANEL_H);
+    return true;
+}
+
+static uint32_t text_rgb;
+static void plot(void *ud, int x, int y) {
+    (void)ud;
+    panel_set(x, y, text_rgb);
+}
+
+static bool b_led_text(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t x, y;
+    const char *s;
+    uint32_t n;
+    char num[16];
+    if (args[0].type == VAL_INT) {
+        n = (uint32_t)snprintf(num, sizeof num, "%d", (int)args[0].as.i);
+        s = num;
+    } else if (args[0].type != VAL_STR || !jl_get_string(vm, args[0], &s, &n)) {
+        return jl_error(vm, "led_text(): the text must be a string or a number, got %s", value_type_name(args[0]));
+    }
+    if (!jl_get_int(vm, "led_text", 2, args[1], &x) || !jl_get_int(vm, "led_text", 3, args[2], &y) ||
+        !jl_hw_color(vm, "led_text", 4, args[3], &text_rgb))
+        return false;
+    *out = int_val(jl_hw_text(s, n, x, y, plot, NULL));
+    return true;
+}
+
 void hardware_register(JlVM *vm) {
     for (int i = 0; i < MAX_PWM; i++) pwm[i].pin = -1;
     for (int i = 0; i < MAX_STRIPS; i++) strips[i].pin = -1;
@@ -339,4 +451,11 @@ void hardware_register(JlVM *vm) {
     jl_register_native(vm, "pressed", b_pressed, 1);
     jl_register_native(vm, "analog", b_analog, 1);
     jl_register_native(vm, "distance", b_distance, 2);
+    jl_register_native(vm, "led", b_led, 3);
+    jl_register_native(vm, "led_clear", b_led_clear, 0);
+    jl_register_native(vm, "led_show", b_led_show, 0);
+    jl_register_native(vm, "led_width", b_led_width, 0);
+    jl_register_native(vm, "led_height", b_led_height, 0);
+    jl_register_native(vm, "led_size", b_led_size, 0);
+    jl_register_native(vm, "led_text", b_led_text, 4);
 }

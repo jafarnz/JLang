@@ -1,0 +1,23 @@
+// The LED panel: draw, clear, show and clip, on the VM and as native code.
+// args: --panel 8x3
+print(led_width(), led_height())
+led(0, 0, "red")
+led(7, 2, 0x00FF00)
+led(8, 0, "blue")
+led(-1, 1, "blue")
+led_show()
+delay(80)
+led_clear()
+for x in 0..8 {
+    led(x, 1, rgb(0, 0, 255))
+}
+led_show()
+// expect: 8 3
+// expect: [sim      0ms] frame 1
+// expect: #.......
+// expect: ........
+// expect: .......#
+// expect: [sim     80ms] frame 2
+// expect: ........
+// expect: ########
+// expect: ........

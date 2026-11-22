@@ -32,6 +32,8 @@ static struct {
     uint32_t now_ms;
     int photos;
     int last_pressed[SIM_PINS]; /* pressed(): the level at the previous call, 0 = unknown */
+    Panel panel;
+    uint32_t led_xy;
 } sim;
 
 void board_sim_default_options(BoardSimOptions *o) {
@@ -40,6 +42,9 @@ void board_sim_default_options(BoardSimOptions *o) {
     o->ai_answer = "Bus 179 is arriving.";
     for (int i = 0; i < SIM_PINS; i++) o->analog_inputs[i] = -1;
     o->distance_cm = 100;
+    o->panel_w = PANEL_DEFAULT_W;
+    o->panel_h = PANEL_DEFAULT_H;
+    o->print_frames = true;
 }
 
 static void advance_time(uint32_t ms) {
@@ -115,6 +120,13 @@ static bool sim_pin_read(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* In the browser a program that animates forever is stopped after a while. */
+static bool time_left(JlVM *vm) {
+    if (sim.opt.max_ms == 0 || sim.now_ms < sim.opt.max_ms) return true;
+    return jl_error(vm, "stopped after %u seconds of simulated time. On a board the program would keep running",
+                    (unsigned)(sim.opt.max_ms / 1000));
+}
+
 static bool sim_delay(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
     (void)out;
@@ -122,7 +134,7 @@ static bool sim_delay(JlVM *vm, int argc, Value *args, Value *out) {
     if (!jl_get_int(vm, "delay", 1, args[0], &ms)) return false;
     if (ms < 0) return jl_error(vm, "delay(): can't wait a negative time (%d ms)", (int)ms);
     advance_time((uint32_t)ms);
-    return true;
+    return time_left(vm);
 }
 
 static bool sim_millis(JlVM *vm, int argc, Value *args, Value *out) {
@@ -278,7 +290,7 @@ static bool play(JlVM *vm, const char *fn, int32_t pin, Value note, int32_t ms) 
         SIM_LOG("pin %d tone %d Hz (%.*s) for %d ms\n", (int)pin, (int)hz, (int)n, s, (int)ms);
     else SIM_LOG("pin %d tone %d Hz for %d ms\n", (int)pin, (int)hz, (int)ms);
     advance_time((uint32_t)ms);
-    return true;
+    return time_left(vm);
 }
 
 static bool sim_tone(JlVM *vm, int argc, Value *args, Value *out) {
@@ -336,6 +348,81 @@ static bool sim_distance(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* ---- the LED panel ------------------------------------------------------ */
+
+static bool sim_led(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t x, y;
+    uint32_t rgb;
+    if (!jl_get_int(vm, "led", 1, args[0], &x) || !jl_get_int(vm, "led", 2, args[1], &y) ||
+        !jl_hw_color(vm, "led", 3, args[2], &rgb))
+        return false;
+    panel_set(&sim.panel, x, y, rgb); /* pixels off the panel are ignored */
+    return true;
+}
+
+static bool sim_led_clear(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)vm, (void)argc, (void)args, (void)out;
+    panel_clear(&sim.panel);
+    return true;
+}
+
+static void panel_write(void *ud, const char *data, size_t len) { jl_outf((JlVM *)ud, "%.*s", (int)len, data); }
+
+static bool sim_led_show(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args, (void)out;
+    panel_show(&sim.panel, sim.now_ms, panel_write, vm);
+    return true;
+}
+
+static bool sim_led_width(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)vm, (void)argc, (void)args;
+    *out = int_val(sim.panel.w);
+    return true;
+}
+
+static bool sim_led_height(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)vm, (void)argc, (void)args;
+    *out = int_val(sim.panel.h);
+    return true;
+}
+
+/* led_size() -> [width, height], an array you free */
+static bool sim_led_size(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args;
+    Value *items;
+    if (!jl_new_array(vm, 2, out, &items)) return false;
+    items[0] = int_val(sim.panel.w);
+    items[1] = int_val(sim.panel.h);
+    return true;
+}
+
+static uint32_t text_rgb;
+static void plot(void *ud, int x, int y) { panel_set((Panel *)ud, x, y, text_rgb); }
+
+/* led_text(msg, x, y, colour) draws msg (a string or a number) in the 5x7
+   font and returns the x just after it, so text can be measured or scrolled. */
+static bool sim_led_text(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t x, y;
+    uint32_t rgb;
+    const char *s;
+    uint32_t n;
+    char num[16];
+    if (args[0].type == VAL_INT) {
+        n = (uint32_t)snprintf(num, sizeof num, "%d", (int)args[0].as.i);
+        s = num;
+    } else if (args[0].type != VAL_STR || !jl_get_string(vm, args[0], &s, &n)) {
+        return jl_error(vm, "led_text(): the text must be a string or a number, got %s", value_type_name(args[0]));
+    }
+    if (!jl_get_int(vm, "led_text", 2, args[1], &x) || !jl_get_int(vm, "led_text", 3, args[2], &y) ||
+        !jl_hw_color(vm, "led_text", 4, args[3], &rgb))
+        return false;
+    text_rgb = rgb;
+    *out = int_val(jl_hw_text(s, n, x, y, plot, &sim.panel));
+    return true;
+}
+
 /* ---- memory-mapped I/O --------------------------------------------- */
 /* The same registers as the RISC-V emulator (see rv.h), so code that
  * drives hardware through registers runs the same way in both. */
@@ -378,6 +465,10 @@ static bool mmio_read(JlVM *vm, uint32_t addr, uint32_t *v) {
     }
     case RV_TIMER_MS: *v = sim.now_ms; return true;
     case RV_UART_TX: case RV_TIMER_WAIT: *v = 0; return true;
+    case RV_LED_XY: *v = sim.led_xy; return true;
+    case RV_LED_W: *v = (uint32_t)sim.panel.w; return true;
+    case RV_LED_H: *v = (uint32_t)sim.panel.h; return true;
+    case RV_LED_RGB: case RV_LED_SHOW: case RV_LED_CLEAR: *v = 0; return true;
     }
     return jl_error(vm, "mmio_read32(): 0x%08X is not a register of the simulated board", (unsigned)addr);
 }
@@ -411,6 +502,10 @@ static bool mmio_write(JlVM *vm, uint32_t addr, uint32_t v) {
         }
         return true;
     case RV_TIMER_WAIT: advance_time(v); return true;
+    case RV_LED_XY: sim.led_xy = v; return true;
+    case RV_LED_RGB: panel_set(&sim.panel, (int16_t)(sim.led_xy >> 16), (int16_t)(sim.led_xy & 0xFFFF), v); return true;
+    case RV_LED_SHOW: panel_show(&sim.panel, sim.now_ms, panel_write, vm); return true;
+    case RV_LED_CLEAR: panel_clear(&sim.panel); return true;
     case RV_EXIT: return jl_error(vm, "the program wrote %u to the exit register", (unsigned)v);
     }
     return jl_error(vm, "mmio_write32(): 0x%08X is not a register of the simulated board", (unsigned)addr);
@@ -451,8 +546,14 @@ static bool sim_mmio_write8(JlVM *vm, int argc, Value *args, Value *out) {
 }
 
 void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
+    panel_free(&sim.panel);
     memset(&sim, 0, sizeof sim);
     sim.opt = *o;
+    panel_init(&sim.panel, o->panel_w, o->panel_h);
+    sim.panel.print = o->print_frames;
+    sim.panel.ansi = o->ansi_frames;
+    sim.panel.sink = o->frame_sink;
+    sim.panel.sink_data = o->frame_data;
     jl_register_native(vm, "pin_mode", sim_pin_mode, 2);
     jl_register_native(vm, "pin_write", sim_pin_write, 2);
     jl_register_native(vm, "pin_read", sim_pin_read, 1);
@@ -477,4 +578,11 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     jl_register_native(vm, "pressed", sim_pressed, 1);
     jl_register_native(vm, "analog", sim_analog, 1);
     jl_register_native(vm, "distance", sim_distance, 2);
+    jl_register_native(vm, "led", sim_led, 3);
+    jl_register_native(vm, "led_clear", sim_led_clear, 0);
+    jl_register_native(vm, "led_show", sim_led_show, 0);
+    jl_register_native(vm, "led_width", sim_led_width, 0);
+    jl_register_native(vm, "led_height", sim_led_height, 0);
+    jl_register_native(vm, "led_size", sim_led_size, 0);
+    jl_register_native(vm, "led_text", sim_led_text, 4);
 }

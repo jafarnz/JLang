@@ -16,6 +16,7 @@
 #ifndef JL_RV_H
 #define JL_RV_H
 
+#include "panel.h"
 #include "common.h"
 
 #define RV_RAM_SIZE (1u << 20) /* 1 MB of RAM starting at address 0 */
@@ -28,6 +29,12 @@
 #define RV_TIMER_MS   0x10002000u /* read: milliseconds since start */
 #define RV_TIMER_WAIT 0x10002004u /* write n: wait n milliseconds */
 #define RV_EXIT       0x10003000u /* write a code to stop the program */
+#define RV_LED_XY     0x10004000u /* write x << 16 | y (each 16-bit, signed) */
+#define RV_LED_RGB    0x10004004u /* write 0xRRGGBB: sets the pixel at LED_XY */
+#define RV_LED_SHOW   0x10004008u /* write: show the frame */
+#define RV_LED_CLEAR  0x1000400Cu /* write: turn every pixel off */
+#define RV_LED_W      0x10004010u /* read: panel width */
+#define RV_LED_H      0x10004014u /* read: panel height */
 
 /* ---- assembler -------------------------------------------------------- */
 
@@ -70,6 +77,11 @@ typedef struct {
     RvWriteFn out;
     RvWriteFn err;
     void *ud;
+    int panel_w, panel_h;    /* LED panel size; 0 = 60 x 7 */
+    bool ansi_frames;        /* print frames in colour, redrawn in place */
+    JlFrameFn frame_sink;    /* if set, frames go here instead of being printed */
+    void *frame_data;
+    uint32_t max_ms;         /* stop once this much time has passed, 0 = never */
 } RvRunOptions;
 
 /* Runs an assembled image from symbol `_start`. Returns the exit code

@@ -18,6 +18,40 @@
 #define EXPORT(name) __attribute__((export_name(#name)))
 #define OUTPUT_MAX (512u * 1024u)
 
+/* Frames from led_show(), one after another: the time in ms (u32), the
+   width and height (u16 each), then width * height pixels as R, G, B bytes. */
+#define FRAMES_MAX (24u * 1024u * 1024u)
+#define SIM_SECONDS 60
+static uint8_t *frames;
+static size_t frames_len, frames_cap;
+
+static void on_frame(void *ud, uint32_t ms, int w, int h, const uint32_t *rgb) {
+    (void)ud;
+    size_t need = 8 + (size_t)w * (size_t)h * 3;
+    if (frames_len + need > FRAMES_MAX) return;
+    if (frames_len + need > frames_cap) {
+        size_t cap = frames_cap ? frames_cap : 65536;
+        while (cap < frames_len + need) cap *= 2;
+        uint8_t *f = realloc(frames, cap);
+        if (f == NULL) return;
+        frames = f;
+        frames_cap = cap;
+    }
+    uint8_t *p = frames + frames_len;
+    p[0] = (uint8_t)ms, p[1] = (uint8_t)(ms >> 8), p[2] = (uint8_t)(ms >> 16), p[3] = (uint8_t)(ms >> 24);
+    p[4] = (uint8_t)w, p[5] = (uint8_t)(w >> 8), p[6] = (uint8_t)h, p[7] = (uint8_t)(h >> 8);
+    p += 8;
+    for (int i = 0; i < w * h; i++) {
+        *p++ = (uint8_t)(rgb[i] >> 16);
+        *p++ = (uint8_t)(rgb[i] >> 8);
+        *p++ = (uint8_t)rgb[i];
+    }
+    frames_len += need;
+}
+
+EXPORT(jlw_frames) const uint8_t *jlw_frames(void) { return frames; }
+EXPORT(jlw_frames_len) size_t jlw_frames_len(void) { return frames_len; }
+
 static char *out_buf;
 static size_t out_len, out_cap;
 static bool truncated;
@@ -82,6 +116,7 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
             const char *answer, uint32_t heap, int stats) {
     out_len = 0;
     truncated = false;
+    frames_len = 0;
 
     JlConfig cfg;
     jl_default_config(&cfg);
@@ -98,6 +133,9 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     BoardSimOptions opt;
     board_sim_default_options(&opt);
     if (answer != NULL && answer[0] != '\0') opt.ai_answer = answer;
+    opt.print_frames = false; /* the page draws the frames */
+    opt.frame_sink = on_frame;
+    opt.max_ms = SIM_SECONDS * 1000;
     for (const char *p = pins; p != NULL && *p;) {
         char *end;
         long pin = strtol(p, &end, 10);
@@ -148,6 +186,8 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
         run.max_cycles = 200000000;
         run.out = write_out;
         run.err = write_err;
+        run.frame_sink = on_frame;
+        run.max_ms = SIM_SECONDS * 1000;
         uint64_t cycles = 0;
         code = rv_run(&img, &run, &cycles);
         if (stats) {

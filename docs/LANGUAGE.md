@@ -347,6 +347,22 @@ Colour names: red, green, blue, yellow, cyan, magenta, orange, purple, pink,
 white, warm and off. Notes are a letter, an optional `#` or `b`, and an octave:
 `"A4"` is 440 Hz.
 
+### LED panel
+
+A grid of colour LEDs, drawn a frame at a time. The simulated panel is 60×7
+unless `--panel WxH` says otherwise. `jlang run` prints each frame as text, and
+with `--realtime` in a terminal it animates the frames in colour.
+
+| Function | Description |
+|---|---|
+| `led(x, y, colour)` | set one pixel of the frame; pixels outside the panel are ignored |
+| `led_clear()` | turn every pixel of the frame off |
+| `led_show()` | send the frame to the panel |
+| `led_text(text, x, y, colour)` | draw text or a number in a 5×7 font with a 6 px advance; returns the x after it |
+| `led_width()` / `led_height()` | the panel's size |
+| `led_size()` | `[width, height]` as a new array, which you free |
+| `rgb(r, g, b)` | build a colour from three values 0..255 |
+
 ## Errors
 
 Compile errors show the line, the column and a pointer:
@@ -370,7 +386,7 @@ found, `70` runtime error.
 
 ## Native code
 
-`jlang emu` and `jlang build` compile a program to RISC-V machine code instead of running it on the VM. Native code supports the whole language except the parts that need a heap: `alloc`, `free`, `len`, `read16`, `read32`, `write16`, `write32`, indexing strings, `mem`, `memmap`, `capture`, `ask` and `speak` are compile errors. Two built-ins exist for native code:
+`jlang emu` and `jlang build` compile a program to RISC-V machine code instead of running it on the VM. Native code supports the whole language except the parts that need a heap: `alloc`, `free`, `len`, `read16`, `read32`, `write16`, `write32`, indexing strings, `mem`, `memmap`, `capture`, `ask`, `speak`, arrays, string building, `led_text` and `led_size` are compile errors. `led`, `led_clear`, `led_show`, `led_width`, `led_height` and `rgb` work, through the board's `jl_hal_led_*` functions. Two built-ins exist for native code:
 
 | Function | Description |
 |---|---|

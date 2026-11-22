@@ -28,6 +28,7 @@
 
 #include "compiler.h"
 #include "rv.h"
+#include "hw.h"
 #include "rv_codegen.h"
 
 enum { K_INT, K_BOOL, K_NIL, K_STR, K_FN, K_NATIVE };
@@ -393,6 +394,42 @@ static void gen_native_call(Gen *g, int native, int argc) {
         nil_result = true;
     } else if (strcmp(name, "millis") == 0) {
         out(g, "    call jl_hal_millis\n");
+        result_in_a0 = true;
+    } else if (strcmp(name, "led") == 0) {
+        Kind ck = top(g, 0);
+        if (ck.kind == K_STR) {
+            /* a colour name is looked up now, so the chip only sees a number */
+            uint32_t rgb;
+            if (!literal_arg(g, argc, 2, name, &s, &n)) return;
+            if (!jl_hw_color_by_name(s, n, &rgb)) {
+                error(g, "led(): '%.*s' isn't a colour I know. Use red, green, blue, yellow, cyan, magenta, "
+                         "orange, purple, pink, white, warm or off, or a number like 0xFF8000", (int)n, s);
+                return;
+            }
+            out(g, "    li a2, %u\n", (unsigned)rgb);
+        } else {
+            out(g, "    lw a2, %d(s1)\n", arg_off(argc, 2));
+            out(g, "    li t0, 0x1000000\n");
+            trap_unless(g, "bltu a2, t0", "led(): a colour is 0xRRGGBB, from 0x000000 to 0xFFFFFF");
+        }
+        out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n    call jl_hal_led_set\n", arg_off(argc, 0), arg_off(argc, 1));
+        nil_result = true;
+    } else if (strcmp(name, "rgb") == 0) {
+        static const char *part[3] = {"red", "green", "blue"};
+        out(g, "    li a0, 0\n");
+        for (int i = 0; i < 3; i++) {
+            char m[64];
+            snprintf(m, sizeof m, "rgb(): %s must be 0..255", part[i]);
+            out(g, "    lw t1, %d(s1)\n", arg_off(argc, i));
+            trap_unless(g, "sltiu t0, t1, 256\n    bnez t0", m);
+            out(g, "    slli a0, a0, 8\n    or a0, a0, t1\n");
+        }
+        result_in_a0 = true;
+    } else if (strcmp(name, "led_show") == 0 || strcmp(name, "led_clear") == 0) {
+        out(g, "    call jl_hal_%s\n", name);
+        nil_result = true;
+    } else if (strcmp(name, "led_width") == 0 || strcmp(name, "led_height") == 0) {
+        out(g, "    call jl_hal_%s\n", name);
         result_in_a0 = true;
     } else if (strcmp(name, "u8") == 0 || strcmp(name, "i8") == 0 || strcmp(name, "u16") == 0 ||
                strcmp(name, "i16") == 0) {
@@ -985,7 +1022,14 @@ static const char *SIM_HAL =
     "jl_hal_pin_read:          # a0 = pin -> a0 = level\n"
     "    li t2, 0x10001000\n    lw t3, 12(t2)\n    srl a0, t3, a0\n    andi a0, a0, 1\n    ret\n"
     "jl_hal_delay:\n    li t0, 0x10002004\n    sw a0, 0(t0)\n    ret\n"
-    "jl_hal_millis:\n    li t0, 0x10002000\n    lw a0, 0(t0)\n    ret\n";
+    "jl_hal_millis:\n    li t0, 0x10002000\n    lw a0, 0(t0)\n    ret\n"
+    "jl_hal_led_set:           # a0 = x, a1 = y, a2 = 0xRRGGBB\n"
+    "    slli t0, a0, 16\n    slli t1, a1, 16\n    srli t1, t1, 16\n    or t0, t0, t1\n"
+    "    li t2, 0x10004000\n    sw t0, 0(t2)\n    sw a2, 4(t2)\n    ret\n"
+    "jl_hal_led_show:\n    li t2, 0x10004000\n    sw zero, 8(t2)\n    ret\n"
+    "jl_hal_led_clear:\n    li t2, 0x10004000\n    sw zero, 12(t2)\n    ret\n"
+    "jl_hal_led_width:\n    li t2, 0x10004000\n    lw a0, 16(t2)\n    ret\n"
+    "jl_hal_led_height:\n    li t2, 0x10004000\n    lw a0, 20(t2)\n    ret\n";
 
 static void emit_string(Gen *g, const char *label, const char *s, uint32_t n) {
     out(g, "    .align 2\n%s:\n    .word %u\n", label, (unsigned)n);

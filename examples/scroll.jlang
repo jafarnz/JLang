@@ -1,0 +1,47 @@
+// scroll.jlang - a heart and a scrolling message on the LED panel.
+// Run: jlang run examples/scroll.jlang --realtime
+//
+// Arrays hold the picture and the palette, fmt() builds the message,
+// led_text() draws it, and delay() between frames sets the speed.
+
+let heart = [
+    [0, 1, 1, 0, 1, 1, 0],
+    [1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1],
+    [0, 1, 1, 1, 1, 1, 0],
+    [0, 0, 1, 1, 1, 0, 0],
+    [0, 0, 0, 1, 0, 0, 0],
+]
+let palette = [0xFF3B5C, 0xFF8A3D, 0xFFD23F, 0x3DDC84, 0x3D9BFF, 0xB15CFF]
+
+fn draw_heart(x, colour) {
+    for y in 0..len(heart) {
+        let row = heart[y]
+        for i in 0..len(row) {
+            if row[i] == 1 {
+                led(x + i, y, colour)
+            }
+        }
+    }
+}
+
+// The heart beats in each colour of the palette.
+for i in 0..len(palette) {
+    led_clear()
+    draw_heart(26, palette[i])
+    led_show()
+    delay(150)
+}
+
+// Then a message scrolls in from the right and out to the left.
+let msg = fmt("JLANG {} LEDS", led_width() * led_height())
+let width = len(msg) * 6
+let x = led_width()
+while x > -width {
+    led_clear()
+    led_text(msg, x, 0, palette[(x / 6 % len(palette) + len(palette)) % len(palette)])
+    led_show()
+    delay(40)
+    x -= 1
+}
+free(msg)

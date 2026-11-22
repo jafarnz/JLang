@@ -9,6 +9,7 @@
 #define JL_BOARD_SIM_H
 
 #include "jlang.h"
+#include "panel.h"
 
 #define SIM_PINS 40
 
@@ -18,6 +19,12 @@ typedef struct {
     const char *ai_answer;       /* what the mocked ask() replies */
     int analog_inputs[SIM_PINS]; /* value analog() returns, -1 = 2048 (a knob halfway) */
     int distance_cm;             /* what distance() measures */
+    int panel_w, panel_h;        /* LED panel size, default 60 x 7 */
+    bool print_frames;           /* print each led_show() frame as text */
+    bool ansi_frames;            /* ... in colour, redrawn in place */
+    JlFrameFn frame_sink;        /* also hand each frame to the host */
+    void *frame_data;
+    uint32_t max_ms;             /* stop once this much time has passed, 0 = never */
 } BoardSimOptions;
 
 void board_sim_default_options(BoardSimOptions *o);

@@ -4,6 +4,8 @@
 //   const { code, output } = jl.run(source, { mode: "run", emits: ["button"] })
 //
 // `output` is a list of { text, stream } pieces where stream is "out" or "err".
+// `frames` is null, or an ArrayBuffer with every led_show() frame; parseFrames()
+// splits it into { ms, w, h, rgb } objects.
 
 const MODES = { run: 0, xray: 1, dis: 2, check: 3, riscv: 4, emu: 5 }
 
@@ -65,8 +67,29 @@ export async function loadJLang(source) {
       if (last && last.stream === o.stream) last.text += o.text
       else merged.push({ ...o })
     }
-    return { code, output: merged }
+    // LED panel frames: a copy of the raw frame buffer (see parseFrames)
+    const flen = ex.jlw_frames_len()
+    const frames = flen ? new Uint8Array(ex.memory.buffer, ex.jlw_frames(), flen).slice().buffer : null
+    return { code, output: merged, frames }
   }
 
   return { run, version: "0.1.0" }
+}
+
+// Splits the frame buffer from run() into { ms, w, h, rgb } frames, where rgb
+// holds w * h pixels as R, G, B bytes, row by row from the top left.
+export function parseFrames(buffer) {
+  const out = []
+  if (!buffer) return out
+  const view = new DataView(buffer)
+  let at = 0
+  while (at + 8 <= buffer.byteLength) {
+    const ms = view.getUint32(at, true)
+    const w = view.getUint16(at + 4, true)
+    const h = view.getUint16(at + 6, true)
+    const size = w * h * 3
+    out.push({ ms, w, h, rgb: new Uint8Array(buffer, at + 8, size) })
+    at += 8 + size
+  }
+  return out
 }
