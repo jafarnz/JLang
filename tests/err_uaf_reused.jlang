@@ -1,0 +1,9 @@
+// exit: 70
+// The freed block's memory is reused by `other`, but the stale
+// reference is still caught and both lines are reported.
+let buf = alloc(8)
+free(buf)
+let other = alloc(8)
+print(buf[0])
+// expect: runtime error (line 7): use after free: this buf was freed at line 5 (it was allocated at line 4)
+// expect:   in top-level code, line 7

@@ -11,7 +11,7 @@ print(b[7])                                // expect: 255
 let c = alloc(100)
 free(b)
 let d = alloc(4)
-print(d)                                   // expect: <buf #0, 4 bytes>
+print(d)                                   // expect: <buf #2, 4 bytes>
 free(c)
 free(d)
 mem()

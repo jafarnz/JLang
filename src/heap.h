@@ -52,6 +52,7 @@ typedef struct {
     uint32_t cap;
     HandleEntry *handles;
     uint16_t handle_cap;
+    uint16_t next_handle; /* where the next handle search starts */
 
     /* statistics, shown by mem() */
     uint32_t used_bytes;   /* sum of requested lengths of live blocks */

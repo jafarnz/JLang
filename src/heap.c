@@ -64,10 +64,16 @@ HeapStatus heap_alloc(Heap *h, uint32_t len, uint8_t kind, uint32_t line,
     if (len > h->cap) return HEAP_NO_MEMORY;
     uint32_t need = align4(len == 0 ? 1u : len);
 
-    /* 1. Find a free slot in the handle table. */
-    uint16_t slot;
-    for (slot = 0; slot < h->handle_cap; slot++) {
-        if (!h->handles[slot].live) break;
+    /* 1. Find a free slot in the handle table. The search is round-robin,
+     *    so a freed slot is not reused straight away: its free history
+     *    stays available for "use after free" messages. */
+    uint16_t slot = h->handle_cap;
+    for (uint16_t n = 0; n < h->handle_cap; n++) {
+        uint16_t s = (uint16_t)((h->next_handle + n) % h->handle_cap);
+        if (!h->handles[s].live) {
+            slot = s;
+            break;
+        }
     }
     if (slot == h->handle_cap) return HEAP_NO_HANDLES;
 
@@ -110,6 +116,7 @@ HeapStatus heap_alloc(Heap *h, uint32_t len, uint8_t kind, uint32_t line,
                 h->total_allocs++;
                 if (h->used_bytes > h->peak_bytes) h->peak_bytes = h->used_bytes;
 
+                h->next_handle = (uint16_t)((slot + 1) % h->handle_cap);
                 out->handle = slot;
                 out->gen = e->gen;
                 return HEAP_OK;

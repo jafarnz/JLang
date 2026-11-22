@@ -12,10 +12,14 @@ export async function loadJLang(source) {
   const imports = {
     wasi_snapshot_preview1: { fd_close: stub, fd_fdstat_get: stub, fd_seek: stub, fd_write: stub },
   }
-  const { instance } =
-    source instanceof Response
-      ? await WebAssembly.instantiateStreaming(source, imports)
-      : await WebAssembly.instantiate(source, imports)
+  let instance
+  if (typeof Response !== "undefined" && source instanceof Promise) source = await source
+  if (typeof Response !== "undefined" && source instanceof Response) {
+    const bytes = await source.arrayBuffer() // works even without an application/wasm header
+    ;({ instance } = await WebAssembly.instantiate(bytes, imports))
+  } else {
+    ;({ instance } = await WebAssembly.instantiate(source, imports))
+  }
   const ex = instance.exports
   ex._initialize()
   const enc = new TextEncoder()
