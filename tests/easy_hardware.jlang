@@ -1,0 +1,42 @@
+// The beginner built-ins on the simulated board.
+// args: --pin 4=0 --analog 1=3000 --distance 42
+turn_on(2)
+toggle(2)
+toggle(2)
+turn_off(2)
+brightness(3, 40)
+color(8, "Orange")
+color(8, rgb(1, 2, 3))
+color_at(8, 2, 0x00FF00)
+tone(7, "A4", 100)
+tone(7, "C#5", 50)
+tone(7, 440, 10)
+tone(7, "rest", 40)
+beep(7)
+servo(9, 180)
+print(pressed(4), pressed(4))
+print(analog(1), analog(5))
+print(distance(5, 6))
+print(map(3000, 0, 4095, 0, 100), clamp(-5, 0, 10), clamp(50, 0, 10))
+let r = random(1, 6)
+assert(r >= 1 && r <= 6, "random() stays in range")
+print(random(5, 5))
+// expect: [sim      0ms] pin 2 -> HIGH
+// expect: [sim      0ms] pin 2 -> LOW
+// expect: [sim      0ms] pin 2 -> HIGH
+// expect: [sim      0ms] pin 2 -> LOW
+// expect: [sim      0ms] pin 3 brightness 40%
+// expect: [sim      0ms] pin 8 colour -> orange (#FF8000)
+// expect: [sim      0ms] pin 8 colour -> #010203
+// expect: [sim      0ms] pin 8 LED 2 colour -> green (#00FF00)
+// expect: [sim      0ms] pin 7 tone 440 Hz (A4) for 100 ms
+// expect: [sim    100ms] pin 7 tone 554 Hz (C#5) for 50 ms
+// expect: [sim    150ms] pin 7 tone 440 Hz for 10 ms
+// expect: [sim    160ms] pin 7 silent for 40 ms
+// expect: [sim    200ms] pin 7 tone 1000 Hz for 100 ms
+// expect: [sim    300ms] pin 9 servo -> 180 degrees
+// expect: true false
+// expect: 3000 2048
+// expect: 42
+// expect: 73 0 10
+// expect: 5

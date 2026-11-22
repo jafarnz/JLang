@@ -117,6 +117,8 @@ void jl_free(JlVM *vm) {
 void *jl_user_data(JlVM *vm) { return vm->user_data; }
 void jl_set_trace(JlVM *vm, bool on) { vm->trace = on; }
 
+void jl_seed_random(JlVM *vm, uint32_t seed) { vm->rng = seed ? seed : 0x9E3779B9u; }
+
 void jl_set_step_hook(JlVM *vm, JlStepFn fn, void *user_data) {
     vm->step_hook = fn;
     vm->step_ud = user_data;

@@ -1,0 +1,5 @@
+// A mistyped note explains what a note looks like.
+// exit: 70
+tone(7, "H4", 100)
+// expect: runtime error (line 3): tone(): 'H4' isn't a note. Write a letter, an optional # or b, and an octave, like "C4", "F#5" or "Bb3", or "rest" for silence
+// expect:   in top-level code, line 3

@@ -396,6 +396,64 @@ static bool bi_emit(JlVM *vm, int argc, Value *args, Value *out) {
     return r == JL_OK; /* errors inside the handler were already reported */
 }
 
+/* ---- numbers ------------------------------------------------------ */
+
+/* random(lo, hi): a whole number from lo to hi, both included. */
+static bool bi_random(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t lo, hi;
+    if (!jl_get_int(vm, "random", 1, args[0], &lo) || !jl_get_int(vm, "random", 2, args[1], &hi)) return false;
+    if (lo > hi) return jl_error(vm, "random(): the first number (%d) must not be bigger than the second (%d)",
+                                 (int)lo, (int)hi);
+    if (vm->rng == 0) vm->rng = 0x9E3779B9u;
+    uint32_t x = vm->rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    vm->rng = x;
+    uint64_t span = (uint64_t)((int64_t)hi - lo) + 1;
+    *out = int_val((int32_t)((int64_t)lo + (int64_t)(x % span)));
+    return true;
+}
+
+/* map(v, from_lo, from_hi, to_lo, to_hi): rescale v from one range to another. */
+static bool bi_map(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t a[5];
+    for (int i = 0; i < 5; i++)
+        if (!jl_get_int(vm, "map", i + 1, args[i], &a[i])) return false;
+    if (a[1] == a[2]) return jl_error(vm, "map(): the first range is empty (%d to %d)", (int)a[1], (int)a[2]);
+    int64_t r = (int64_t)a[3] + ((int64_t)a[0] - a[1]) * ((int64_t)a[4] - a[3]) / ((int64_t)a[2] - a[1]);
+    *out = int_val((int32_t)r);
+    return true;
+}
+
+/* clamp(v, lo, hi): v, kept between lo and hi. */
+static bool bi_clamp(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t v, lo, hi;
+    if (!jl_get_int(vm, "clamp", 1, args[0], &v) || !jl_get_int(vm, "clamp", 2, args[1], &lo) ||
+        !jl_get_int(vm, "clamp", 3, args[2], &hi))
+        return false;
+    if (lo > hi) return jl_error(vm, "clamp(): the low limit (%d) is bigger than the high limit (%d)", (int)lo, (int)hi);
+    *out = int_val(v < lo ? lo : v > hi ? hi : v);
+    return true;
+}
+
+/* rgb(r, g, b): a colour as 0xRRGGBB, each part 0..255. */
+static bool bi_rgb(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t c[3];
+    static const char *names[3] = {"red", "green", "blue"};
+    for (int i = 0; i < 3; i++) {
+        if (!jl_get_int(vm, "rgb", i + 1, args[i], &c[i])) return false;
+        if (c[i] < 0 || c[i] > 255)
+            return jl_error(vm, "rgb(): %s must be 0..255, got %d", names[i], (int)c[i]);
+    }
+    *out = int_val(c[0] << 16 | c[1] << 8 | c[2]);
+    return true;
+}
+
 static bool bi_asm(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
     (void)args;
@@ -424,4 +482,8 @@ void jl_register_core(JlVM *vm) {
     jl_register_native(vm, "cycles", bi_cycles, 0);
     jl_register_native(vm, "emit", bi_emit, 1);
     jl_register_native(vm, "asm", bi_asm, 1);
+    jl_register_native(vm, "random", bi_random, 2);
+    jl_register_native(vm, "map", bi_map, 5);
+    jl_register_native(vm, "clamp", bi_clamp, 3);
+    jl_register_native(vm, "rgb", bi_rgb, 3);
 }

@@ -261,6 +261,10 @@ event name.
 | `cycles()` | number of VM instructions executed so far |
 | `assert(cond, msg)` | stop with an error if `cond` is false |
 | `emit(name)` | fire an event from code |
+| `random(lo, hi)` | a whole number from `lo` to `hi`, both included |
+| `map(v, a, b, c, d)` | rescale `v` from the range `a`..`b` to `c`..`d` |
+| `clamp(v, lo, hi)` | `v`, kept between `lo` and `hi` |
+| `rgb(r, g, b)` | a colour as `0xRRGGBB`, each part 0..255 |
 
 ### printf placeholders
 
@@ -291,6 +295,27 @@ device firmware provides the real ones with the same names.
 
 The simulated `ask()` replies with the text from `--answer` and takes 1.8 s of
 virtual time; `capture()` takes 150 ms; `speak()` about 60 ms per character.
+
+### Parts
+
+These set up the pin themselves, so they need no `pin_mode`.
+
+| Function | Description |
+|---|---|
+| `turn_on(pin)` / `turn_off(pin)` / `toggle(pin)` | switch an output |
+| `brightness(pin, percent)` | PWM from 0 to 100, for LEDs and motors |
+| `color(pin, colour)` | set a WS2812 colour LED; `colour` is a name or `0xRRGGBB` |
+| `color_at(pin, n, colour)` | set LED `n` (0..63) of a WS2812 strip |
+| `tone(pin, freq, ms)` | play a frequency in Hz or a note like `"C#5"`; `"rest"` is silence |
+| `beep(pin)` | a 100 ms beep at 1000 Hz |
+| `servo(pin, angle)` | turn a servo to 0..180 degrees |
+| `pressed(pin)` | true once per press of a button to ground, debounced |
+| `analog(pin)` | read a voltage as 0..4095 (simulate with `--analog 1=3000`) |
+| `distance(trig, echo)` | HC-SR04 distance in cm, or -1 if nothing echoes (simulate with `--distance 42`) |
+
+Colour names: red, green, blue, yellow, cyan, magenta, orange, purple, pink,
+white, warm and off. Notes are a letter, an optional `#` or `b`, and an octave:
+`"A4"` is 440 Hz.
 
 ## Errors
 

@@ -1,3 +1,5 @@
+<img src="docs/logo.svg" alt="" width="72">
+
 # JLang
 
 JLang is a small programming language for learning how computers work at the level of bits, bytes and pins, and for writing the behaviour of microcontroller projects.

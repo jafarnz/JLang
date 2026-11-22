@@ -65,6 +65,7 @@ struct JlVM {
     char errmsg[512];
 
     uint64_t cycles;               /* instructions executed */
+    uint32_t rng;                  /* random() state, xorshift32 */
     uint64_t max_cycles;           /* 0 = no limit */
     uint64_t op_counts[OP_COUNT];  /* per-instruction counts */
 };

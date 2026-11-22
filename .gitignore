@@ -9,3 +9,7 @@ glass/firmware/build/
 glass/firmware/sdkconfig
 glass/firmware/sdkconfig.old
 snap-*.ppm
+boards/*/managed_components/
+boards/*/dependencies.lock
+glass/firmware/managed_components/
+glass/firmware/dependencies.lock

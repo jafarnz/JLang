@@ -4,7 +4,7 @@ There are two ways to run a JLang program on a microcontroller.
 
 **Native code** compiles the program to RISC-V machine code with `jlang build`. It runs on any RISC-V microcontroller, with no interpreter on the chip. The board only has to provide the seven small functions in [`jl_hal.h`](jl_hal.h), which print a character, drive and read pins and measure time. This folder has them for the RISC-V ESP32 chips ([`esp32-riscv`](esp32-riscv): ESP32-C3, C6 and H2) and the [Raspberry Pi Pico 2](pico2). Native code supports the language without the heap and strings created at run time, and adds `mmio_read32`, `mmio_write32` and `asm()` for direct register access and inline assembly.
 
-**The bytecode VM** runs the full language, including memory, inside the firmware of any 32-bit microcontroller with about 64 KB of RAM. The firmware registers its hardware as built-in functions, as in the [ESP32 example](esp32-vm), which works on every ESP32 including the ESP32-S3 used by Iris.
+**The bytecode VM** runs the full language, including memory, inside the firmware of any 32-bit microcontroller with about 64 KB of RAM. The firmware registers its hardware as built-in functions, as in the [ESP32 example](esp32-vm), which works on every ESP32 including the ESP32-S3 used by Iris. It provides the pin and register built-ins and the part built-ins such as `brightness`, `color`, `tone`, `servo`, `pressed`, `analog` and `distance`, using the chip's PWM, RMT and ADC peripherals ([`hardware.c`](esp32-vm/main/hardware.c)).
 
 Without any hardware, `jlang emu app.jlang` runs the native code on a RISC-V emulator, and `jlang run app.jlang` runs the VM on a simulated board.
 

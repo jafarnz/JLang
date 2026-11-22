@@ -16,6 +16,8 @@ typedef struct {
     bool realtime;               /* delay() really waits */
     int pin_inputs[SIM_PINS];    /* value pin_read() returns, -1 = default */
     const char *ai_answer;       /* what the mocked ask() replies */
+    int analog_inputs[SIM_PINS]; /* value analog() returns, -1 = 2048 (a knob halfway) */
+    int distance_cm;             /* what distance() measures */
 } BoardSimOptions;
 
 void board_sim_default_options(BoardSimOptions *o);

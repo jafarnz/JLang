@@ -11,10 +11,12 @@
  */
 #define _POSIX_C_SOURCE 200809L
 
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #include "board_sim.h"
+#include "hw.h"
 #include "rv.h"
 
 enum { MODE_UNSET, MODE_OUT, MODE_IN, MODE_IN_PULLUP };
@@ -29,12 +31,15 @@ static struct {
     int level[SIM_PINS];
     uint32_t now_ms;
     int photos;
+    int last_pressed[SIM_PINS]; /* pressed(): the level at the previous call, 0 = unknown */
 } sim;
 
 void board_sim_default_options(BoardSimOptions *o) {
     memset(o, 0, sizeof *o);
     for (int i = 0; i < SIM_PINS; i++) o->pin_inputs[i] = -1;
     o->ai_answer = "Bus 179 is arriving.";
+    for (int i = 0; i < SIM_PINS; i++) o->analog_inputs[i] = -1;
+    o->distance_cm = 100;
 }
 
 static void advance_time(uint32_t ms) {
@@ -187,6 +192,150 @@ static bool sim_speak(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* ---- beginner built-ins ------------------------------------------------ */
+
+#define SIM_LOG(...) jl_outf(vm, "[sim %6ums] ", (unsigned)sim.now_ms), jl_outf(vm, __VA_ARGS__)
+
+static void set_level(JlVM *vm, int pin, int level) {
+    sim.mode[pin] = MODE_OUT;
+    if (sim.level[pin] != level) {
+        sim.level[pin] = level;
+        SIM_LOG("pin %d -> %s\n", pin, level ? "HIGH" : "LOW");
+    }
+}
+
+static bool sim_turn_on(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t pin;
+    if (!get_pin(vm, "turn_on", args[0], &pin)) return false;
+    set_level(vm, pin, 1);
+    return true;
+}
+
+static bool sim_turn_off(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t pin;
+    if (!get_pin(vm, "turn_off", args[0], &pin)) return false;
+    set_level(vm, pin, 0);
+    return true;
+}
+
+static bool sim_toggle(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t pin;
+    if (!get_pin(vm, "toggle", args[0], &pin)) return false;
+    set_level(vm, pin, sim.mode[pin] == MODE_OUT ? !sim.level[pin] : 1);
+    return true;
+}
+
+static bool sim_brightness(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t pin, pct;
+    if (!get_pin(vm, "brightness", args[0], &pin) || !jl_get_int(vm, "brightness", 2, args[1], &pct)) return false;
+    if (pct < 0 || pct > 100) return jl_error(vm, "brightness(): use a percentage from 0 to 100, got %d", (int)pct);
+    sim.mode[pin] = MODE_OUT;
+    SIM_LOG("pin %d brightness %d%%\n", (int)pin, (int)pct);
+    return true;
+}
+
+static void log_color(JlVM *vm, int pin, int index, uint32_t rgb) {
+    const char *name = jl_hw_color_name(rgb);
+    char where[32] = "";
+    if (index >= 0) snprintf(where, sizeof where, " LED %d", index);
+    if (name) SIM_LOG("pin %d%s colour -> %s (#%06X)\n", pin, where, name, (unsigned)rgb);
+    else SIM_LOG("pin %d%s colour -> #%06X\n", pin, where, (unsigned)rgb);
+}
+
+static bool sim_color(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t pin;
+    uint32_t rgb;
+    if (!get_pin(vm, "color", args[0], &pin) || !jl_hw_color(vm, "color", 2, args[1], &rgb)) return false;
+    log_color(vm, pin, -1, rgb);
+    return true;
+}
+
+static bool sim_color_at(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t pin, index;
+    uint32_t rgb;
+    if (!get_pin(vm, "color_at", args[0], &pin) || !jl_get_int(vm, "color_at", 2, args[1], &index) ||
+        !jl_hw_color(vm, "color_at", 3, args[2], &rgb))
+        return false;
+    if (index < 0 || index > 63) return jl_error(vm, "color_at(): LED number must be 0..63, got %d", (int)index);
+    log_color(vm, pin, index, rgb);
+    return true;
+}
+
+static bool play(JlVM *vm, const char *fn, int32_t pin, Value note, int32_t ms) {
+    int32_t hz;
+    if (!jl_hw_note(vm, fn, 2, note, &hz)) return false;
+    if (ms < 0) return jl_error(vm, "%s(): can't play for a negative time (%d ms)", fn, (int)ms);
+    const char *s;
+    uint32_t n;
+    if (hz == 0) SIM_LOG("pin %d silent for %d ms\n", (int)pin, (int)ms);
+    else if (note.type == VAL_STR && jl_get_string(vm, note, &s, &n))
+        SIM_LOG("pin %d tone %d Hz (%.*s) for %d ms\n", (int)pin, (int)hz, (int)n, s, (int)ms);
+    else SIM_LOG("pin %d tone %d Hz for %d ms\n", (int)pin, (int)hz, (int)ms);
+    advance_time((uint32_t)ms);
+    return true;
+}
+
+static bool sim_tone(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t pin, ms;
+    if (!get_pin(vm, "tone", args[0], &pin) || !jl_get_int(vm, "tone", 3, args[2], &ms)) return false;
+    return play(vm, "tone", pin, args[1], ms);
+}
+
+static bool sim_beep(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t pin;
+    if (!get_pin(vm, "beep", args[0], &pin)) return false;
+    return play(vm, "beep", pin, int_val(1000), 100);
+}
+
+static bool sim_servo(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    int32_t pin, angle;
+    if (!get_pin(vm, "servo", args[0], &pin) || !jl_get_int(vm, "servo", 2, args[1], &angle)) return false;
+    if (angle < 0 || angle > 180) return jl_error(vm, "servo(): the angle must be 0 to 180 degrees, got %d", (int)angle);
+    SIM_LOG("pin %d servo -> %d degrees\n", (int)pin, (int)angle);
+    return true;
+}
+
+/* pressed(pin): true once each time a button between the pin and ground
+   is pressed. Simulate the button with --pin N=0. */
+static bool sim_pressed(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t pin;
+    if (!get_pin(vm, "pressed", args[0], &pin)) return false;
+    sim.mode[pin] = MODE_IN_PULLUP;
+    int level = sim.opt.pin_inputs[pin] < 0 ? 1 : sim.opt.pin_inputs[pin] != 0;
+    int was = sim.last_pressed[pin] ? sim.last_pressed[pin] - 1 : 1;
+    sim.last_pressed[pin] = level + 1;
+    *out = bool_val(was == 1 && level == 0);
+    return true;
+}
+
+static bool sim_analog(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t pin;
+    if (!get_pin(vm, "analog", args[0], &pin)) return false;
+    int v = sim.opt.analog_inputs[pin];
+    *out = int_val(v < 0 ? 2048 : v);
+    return true;
+}
+
+static bool sim_distance(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t trig, echo;
+    if (!get_pin(vm, "distance", args[0], &trig) || !get_pin(vm, "distance", args[1], &echo)) return false;
+    advance_time(1 + (uint32_t)sim.opt.distance_cm * 58 / 1000); /* the echo takes 58 us per cm */
+    *out = int_val(sim.opt.distance_cm);
+    return true;
+}
+
 /* ---- memory-mapped I/O --------------------------------------------- */
 /* The same registers as the RISC-V emulator (see rv.h), so code that
  * drives hardware through registers runs the same way in both. */
@@ -316,4 +465,16 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     jl_register_native(vm, "mmio_write32", sim_mmio_write32, 2);
     jl_register_native(vm, "mmio_read8", sim_mmio_read8, 1);
     jl_register_native(vm, "mmio_write8", sim_mmio_write8, 2);
+    jl_register_native(vm, "turn_on", sim_turn_on, 1);
+    jl_register_native(vm, "turn_off", sim_turn_off, 1);
+    jl_register_native(vm, "toggle", sim_toggle, 1);
+    jl_register_native(vm, "brightness", sim_brightness, 2);
+    jl_register_native(vm, "color", sim_color, 2);
+    jl_register_native(vm, "color_at", sim_color_at, 3);
+    jl_register_native(vm, "tone", sim_tone, 3);
+    jl_register_native(vm, "beep", sim_beep, 1);
+    jl_register_native(vm, "servo", sim_servo, 2);
+    jl_register_native(vm, "pressed", sim_pressed, 1);
+    jl_register_native(vm, "analog", sim_analog, 1);
+    jl_register_native(vm, "distance", sim_distance, 2);
 }

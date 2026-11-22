@@ -65,6 +65,8 @@ static void usage(FILE *f) {
         "options for run / xray:\n"
         "  --emit <event>                after the script, fire an event (repeatable)\n"
         "  --pin <n>=<0|1>               value the simulated pin n reads as input\n"
+        "  --analog <n>=<0..4095>        value analog(n) reads (default 2048)\n"
+        "  --distance <cm>               what distance() measures (default 100)\n"
         "  --answer <text>               what the simulated ask() replies\n"
         "  --heap <bytes>                heap size (default %u)\n"
         "  --max-cycles <n>              stop after n instructions (catches endless loops)\n"
@@ -166,6 +168,23 @@ static bool parse_args(int argc, char **argv, Options *o) {
                 return false;
             }
             o->board.pin_inputs[pin] = val;
+        } else if (strcmp(a, "--analog") == 0 && has_value) {
+            int pin, val;
+            char extra;
+            if (sscanf(argv[++i], "%d=%d%c", &pin, &val, &extra) != 2 || pin < 0 || pin >= SIM_PINS || val < 0 ||
+                val > 4095) {
+                fprintf(stderr, "jlang: --analog expects <pin>=<0..4095>, like --analog 1=3000\n");
+                return false;
+            }
+            o->board.analog_inputs[pin] = val;
+        } else if (strcmp(a, "--distance") == 0 && has_value) {
+            char *end;
+            long v = strtol(argv[++i], &end, 10);
+            if (*end != '\0' || v < 2 || v > 400) {
+                fprintf(stderr, "jlang: --distance must be 2 to 400 (cm)\n");
+                return false;
+            }
+            o->board.distance_cm = (int)v;
         } else if (a[0] == '-' && a[1] == '-') {
             fprintf(stderr, "jlang: unknown or incomplete option '%s'\n", a);
             return false;

@@ -4,7 +4,7 @@
 
 ## Tooling
 - `jlang check FILE` compile only. Exit 0 = ok, 65 = compile error. Errors: `error (line L, col C): message` + source line + caret.
-- `jlang run FILE [--emit EVENT]... [--pin N=0|1] [--answer TEXT] [--heap BYTES] [--max-cycles N] [--stats]` run on the simulated board. Exit 70 = runtime error: `runtime error (line L): message` + call trace. Unfreed memory is reported at exit as `leak: ...` on stderr.
+- `jlang run FILE [--emit EVENT]... [--pin N=0|1] [--analog N=0..4095] [--distance CM] [--answer TEXT] [--heap BYTES] [--max-cycles N] [--stats]` run on the simulated board. Exit 70 = runtime error: `runtime error (line L): message` + call trace. Unfreed memory is reported at exit as `leak: ...` on stderr.
 - `jlang xray FILE` trace every instruction. `jlang dis FILE` print bytecode. `jlang new NAME` scaffold a project.
 
 ## Syntax
@@ -38,10 +38,11 @@ NOTE: bitwise binds tighter than comparison: `x & 1 == 0` is `(x & 1) == 0`. The
 - `mem()` prints heap stats, `memmap()` prints the block layout.
 
 ## Built-ins
-print(...) · printf(fmt, ...) placeholders {} {d} {x} {b} {c} with optional width e.g. {x2} {b8}, `{{ }}` literal braces, no automatic newline · alloc(n) · free(x) · len(x) · read16 read32 write16 write32 · u8 i8 u16 i16 · mem() · memmap() · cycles() · assert(cond, msg) · emit(name)
+random(lo, hi) inclusive · map(v, a, b, c, d) rescale · clamp(v, lo, hi) · rgb(r, g, b) -> 0xRRGGBB · print(...) · printf(fmt, ...) placeholders {} {d} {x} {b} {c} with optional width e.g. {x2} {b8}, `{{ }}` literal braces, no automatic newline · alloc(n) · free(x) · len(x) · read16 read32 write16 write32 · u8 i8 u16 i16 · mem() · memmap() · cycles() · assert(cond, msg) · emit(name)
 
 ## Board built-ins (simulated on desktop, real on device)
 pin_mode(pin, "out"|"in"|"in_pullup") · pin_write(pin, 0|1) (pin must be "out") · pin_read(pin) (pin must be an input) · delay(ms) (virtual time) · millis() · capture() -> buf (free it) · ask(photo_buf, question_str) -> str (free it) · speak(text, lang="en")
+Parts (set up the pin themselves, no pin_mode needed): turn_on(pin) · turn_off(pin) · toggle(pin) · brightness(pin, 0..100) PWM · color(pin, "red"|0xRRGGBB) WS2812 LED · color_at(pin, n, colour) strip LED n 0..63 · tone(pin, hz|"C#5"|"rest", ms) blocks for ms · beep(pin) · servo(pin, 0..180) · pressed(pin) -> bool, true once per press of a button to ground, debounced · analog(pin) -> 0..4095 (sim: --analog N=V, default 2048) · distance(trig, echo) -> cm or -1 (sim: --distance CM, default 100). Colour names: red green blue yellow cyan magenta orange purple pink white warm off. These are VM-only: compile errors in native code.
 
 ## Native code (RISC-V)
 - `jlang emu FILE [--emit EVENT] [--asm] [--listing]` compiles to RV32IM and runs on the built-in emulator. `jlang build FILE -o out.s` writes assembly for a real board, which links with a C file implementing boards/jl_hal.h. `jlang asm FILE.s` assembles and runs hand-written assembly.

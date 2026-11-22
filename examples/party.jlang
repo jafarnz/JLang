@@ -1,0 +1,31 @@
+// party.jlang - lights, colour, sound and a button, with no setup code.
+// Run: jlang run examples/party.jlang --pin 4=0
+//
+// Wiring: an LED on pin 2, an RGB LED (WS2812) on pin 8, a buzzer on
+// pin 7, and a button from pin 4 to ground.
+let LED = 2
+let RGB = 8
+let BUZZER = 7
+let BUTTON = 4
+
+// Play a short tune and flash the LED with each note.
+fn note(n) {
+    turn_on(LED)
+    tone(BUZZER, n, 150)
+    turn_off(LED)
+}
+note("C5")
+note("E5")
+note("G5")
+note("C6")
+
+// Each button press picks a random colour.
+for round in 0..3 {
+    if pressed(BUTTON) {
+        let c = rgb(random(0, 255), random(0, 255), random(0, 255))
+        color(RGB, c)
+        beep(BUZZER)
+    }
+    delay(500)
+}
+color(RGB, "off")

@@ -16,6 +16,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#include "esp_random.h"
+#include "hardware.h"
 #include "jlang.h"
 
 /* The BOOT button: GPIO 0 on Xtensa chips, GPIO 9 on the RISC-V ones. */
@@ -182,6 +184,8 @@ void app_main(void) {
     jl_register_native(vm, "mmio_write32", b_mmio_write32, 2);
     jl_register_native(vm, "mmio_read8", b_mmio_read8, 1);
     jl_register_native(vm, "mmio_write8", b_mmio_write8, 2);
+    hardware_register(vm);
+    jl_seed_random(vm, esp_random());
 
     /* Give the USB serial port a moment so the first lines aren't lost. */
     vTaskDelay(pdMS_TO_TICKS(1500));

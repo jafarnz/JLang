@@ -451,8 +451,15 @@ static void gen_native_call(Gen *g, int native, int argc) {
         push_kind(g, kind_of(K_NIL));
         return;
     } else {
-        error(g, "%s() isn't available in native code yet (native programs have no heap or "
-                 "camera); run it with `jlang run` instead", name);
+        static const char *heap_fns[] = {"alloc", "free", "len", "read16", "read32", "write16", "write32",
+                                         "mem", "memmap", "capture", "ask", "speak", NULL};
+        bool heap = false;
+        for (int i = 0; heap_fns[i]; i++) heap |= strcmp(name, heap_fns[i]) == 0;
+        if (heap)
+            error(g, "%s() isn't available in native code yet (native programs have no heap or "
+                     "camera); run it with `jlang run` instead", name);
+        else
+            error(g, "%s() isn't available in native code yet; run it on the VM with `jlang run` instead", name);
         return;
     }
 

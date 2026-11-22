@@ -58,6 +58,10 @@ JlResult jl_disassemble_or_check(JlVM *vm, const char *source, bool print);
 
 void jl_set_trace(JlVM *vm, bool on);
 
+/* Seeds random(). It starts with a fixed seed, so simulator runs repeat
+   exactly; device firmware seeds it from the hardware. */
+void jl_seed_random(JlVM *vm, uint32_t seed);
+
 /*
  * Stepping: the VM calls the hook before every instruction, with a view
  * of the machine at that moment. The hook can wait (to run the program
