@@ -5,3 +5,6 @@ boards/*/build/
 boards/*/sdkconfig
 boards/*/sdkconfig.old
 boards/*/managed_components/
+glass/firmware/build/
+glass/firmware/sdkconfig
+glass/firmware/sdkconfig.old

@@ -55,12 +55,20 @@ void app_main(void) {
 ## Writing built-ins
 
 - Read arguments from `args[0..argc-1]`; check types with `jl_get_int` /
-  `jl_get_string`.
+  `jl_get_string`, and use `jl_get_bytes` for a `buf` or `str`.
 - Put the result in `*out` (it starts as `nil`).
 - On failure, `return jl_error(vm, "message")`; JLang adds the line number and
   call trace.
 - Return memory to the script with `jl_new_buf` / `jl_new_string`: it lives on
   the script's heap, so it is counted, leak-checked and freed by the script.
+
+## Watching a program run
+
+`jl_set_step_hook(vm, fn, data)` makes the VM call `fn` before each
+instruction with a `JlStep`: the source line, the instruction's name, the
+value stack, the call depth, the instruction count and the heap usage. The
+hook can wait (to slow the program down), draw the state, or return `false`
+to stop the program. [Glass](../glass) is built on it.
 
 ## Building for a device
 

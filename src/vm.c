@@ -116,6 +116,11 @@ void jl_free(JlVM *vm) {
 
 void *jl_user_data(JlVM *vm) { return vm->user_data; }
 void jl_set_trace(JlVM *vm, bool on) { vm->trace = on; }
+
+void jl_set_step_hook(JlVM *vm, JlStepFn fn, void *user_data) {
+    vm->step_hook = fn;
+    vm->step_ud = user_data;
+}
 uint64_t jl_cycles(JlVM *vm) { return vm->cycles; }
 
 int vm_global_find(JlVM *vm, const char *name, int len) {
@@ -392,6 +397,12 @@ static bool get_bytes(JlVM *vm, Value v, uint8_t **data, uint32_t *len) {
                     value_type_name(v));
 }
 
+bool jl_get_bytes(JlVM *vm, const char *fn_name, Value v, uint8_t **data, uint32_t *len) {
+    if (v.type != VAL_BUF && v.type != VAL_STR)
+        return jl_error(vm, "%s(): expected a buf or str, got %s", fn_name, value_type_name(v));
+    return get_bytes(vm, v, data, len);
+}
+
 static bool check_index(JlVM *vm, Value idx, uint32_t len, const char *what, int32_t *out) {
     if (idx.type != VAL_INT) {
         return jl_error(vm, "an index must be an int, got %s", value_type_name(idx));
@@ -577,6 +588,24 @@ static JlResult run(JlVM *vm, int base) {
         if (vm->trace) {
             trace_stack(vm);
             disassemble_instruction(vm, frame->fn, (int)(frame->ip - CHUNK()->code));
+        }
+        if (vm->step_hook != NULL) {
+            int off = (int)(frame->ip - CHUNK()->code);
+            JlStep st = {
+                .line = CHUNK()->lines[off],
+                .offset = off,
+                .op = opcode_name(*frame->ip),
+                .stack = vm->stack,
+                .depth = (int)(vm->sp - vm->stack),
+                .frames = vm->frame_count,
+                .cycles = vm->cycles,
+                .heap_used = vm->heap.used_bytes,
+                .heap_size = vm->heap.cap,
+            };
+            if (!vm->step_hook(vm, &st, vm->step_ud)) {
+                jl_error(vm, "stopped by the host");
+                goto error;
+            }
         }
         uint8_t op = READ_BYTE();
         if (++vm->cycles > vm->max_cycles && vm->max_cycles != 0) {

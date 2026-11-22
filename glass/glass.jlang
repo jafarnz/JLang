@@ -1,0 +1,517 @@
+// glass.jlang - the display of Glass, a pocket computer that shows a JLang
+// program running one instruction at a time.
+//
+// The 32x8 LED matrix shows the program's value stack. Each row is one
+// value, the top of the stack first, drawn as 32 bits with bit 31 on the
+// left. The screen shows the instruction about to run, its source line,
+// the top values in decimal and hex, and the last line the program
+// printed. The knob sets the clock. Turned fully left, the program pauses
+// and each press of the button runs one instruction.
+//
+// The firmware runs this file once at startup, then calls `on tick` before
+// every instruction of the program being shown (see core/glass.h).
+
+// ---- wiring: GPIO numbers on a XIAO ESP32-C6 ----------------------------
+let BUTTON = 1        // D1, connects to ground when pressed
+let LED_DIN = 18      // D10 to the matrix's DIN
+let LED_CS = 2        // D2 to CS
+let LED_CLK = 19      // D8 to CLK
+let OLED = 0x3C       // the screen's I2C address; SDA is D4, SCL is D5
+let SH1106 = true     // true for the 1.3" screen, false for a 0.96" SSD1306
+// knob() reads the potentiometer on D0 as 0 (fully left) to 4095.
+
+// If the matrix shows the module numbers 1 2 3 4 mirrored, upside down,
+// sideways or in the wrong order at startup, change these.
+let MIRROR = false
+let FLIP = false
+let ROTATE = false
+let REVERSE = false
+
+// ---- the LED matrix: four MAX7219 chips in a chain ------------------------
+// leds[m * 8 + y] holds row y of module m, modules counted from the left,
+// with bit 7 as the leftmost LED.
+let leds = alloc(32)
+
+// Shift one 16-bit word into the chain, highest bit first. The chip reads
+// DIN when CLK goes from 0 to 1.
+fn led_send(word) {
+    for i in 0..16 {
+        pin_write(LED_DIN, word[15 - i])
+        pin_write(LED_CLK, 1)
+        pin_write(LED_CLK, 0)
+    }
+}
+
+// A MAX7219 word: bits 11..8 choose a register, bits 7..0 are its value.
+// Registers 1 to 8 hold the eight rows of LEDs.
+fn led_word(reg, data) {
+    let w = 0
+    w[11..8] = reg
+    w[7..0] = data
+    return w
+}
+
+// Each chip keeps the last 16 bits shifted into it and acts on them when
+// CS goes back to 1. Words shifted first travel furthest down the chain.
+fn led_all(reg, data) {
+    pin_write(LED_CS, 0)
+    for m in 0..4 {
+        led_send(led_word(reg, data))
+    }
+    pin_write(LED_CS, 1)
+}
+
+fn reverse8(b) {
+    let r = 0
+    for i in 0..8 {
+        r[i] = b[7 - i]
+    }
+    return r
+}
+
+// The byte for register r + 1 of module m, after the orientation settings.
+fn module_byte(m, r) {
+    if !ROTATE {
+        let y = r
+        if FLIP {
+            y = 7 - r
+        }
+        let b = leds[m * 8 + y]
+        if MIRROR {
+            b = reverse8(b)
+        }
+        return b
+    }
+    // Rotated modules drive a column per register: collect bit x of each row.
+    let x = 7 - r
+    if MIRROR {
+        x = r
+    }
+    let b = 0
+    for y in 0..8 {
+        let row = leds[m * 8 + y]
+        let bit = y
+        if FLIP {
+            bit = 7 - y
+        }
+        b[bit] = row[x]
+    }
+    return b
+}
+
+// What each chip's registers hold now, so unchanged rows aren't sent again.
+let led_sent = alloc(32)
+let led_fresh = true
+
+fn led_show() {
+    let out = alloc(4)
+    for r in 0..8 {
+        let changed = led_fresh
+        for k in 0..4 {
+            let m = k
+            if REVERSE {
+                m = 3 - k
+            }
+            out[k] = module_byte(m, r)
+            if out[k] != led_sent[r * 4 + k] {
+                changed = true
+            }
+        }
+        if changed {
+            pin_write(LED_CS, 0)
+            for k in 0..4 {
+                led_send(led_word(r + 1, out[k]))
+                led_sent[r * 4 + k] = out[k]
+            }
+            pin_write(LED_CS, 1)
+        }
+    }
+    free(out)
+    led_fresh = false
+}
+
+fn led_init() {
+    pin_mode(LED_DIN, "out")
+    pin_mode(LED_CS, "out")
+    pin_mode(LED_CLK, "out")
+    pin_write(LED_CS, 1)
+    pin_write(LED_CLK, 0)
+    led_all(0x0F, 0)    // display test off
+    led_all(0x09, 0)    // no digit decoding: each bit is one LED
+    led_all(0x0B, 7)    // scan all eight rows
+    led_all(0x0A, 1)    // brightness 1 of 15
+    led_all(0x0C, 1)    // leave shutdown mode
+}
+
+// Draw value v into row y as 32 bits, bit 31 on the left.
+fn led_value(y, v) {
+    for m in 0..4 {
+        let hi = 31 - m * 8
+        leds[m * 8 + y] = v[hi..hi - 7]
+    }
+}
+
+// ---- the screen: SH1106 or SSD1306 over I2C --------------------------------
+// The screen is used as 8 rows of 21 characters, like the text mode of an
+// old PC. Drawing only writes characters into `grid`. oled_show() then sends
+// the pixels of just the characters that changed, which is much less work
+// than redrawing all 128 x 64 pixels every frame.
+let grid = alloc(168)    // what should be on the screen
+let shown = alloc(168)   // what is on it now
+let cmd = alloc(3)
+let glyph = alloc(6)     // one character: 6 columns of 8 pixels, bit 0 at the top
+
+// The first byte of each I2C message says what follows: 0x00 for commands,
+// 0x40 for pixels.
+fn oled_cmds(list) {
+    i2c_write(OLED, 0x00, list, 0, len(list))
+}
+
+fn oled_init() {
+    // display off, clock, 64 rows, no offset, start at row 0, mirror to
+    // match the module's wiring, COM layout, contrast, VCOM level, normal
+    oled_cmds("\xAE\xD5\x80\xA8\x3F\xD3\x00\x40\xA1\xC8\xDA\x12\x81\xCF\xDB\x40\xA4\xA6")
+    if SH1106 {
+        oled_cmds("\xAD\x8B\xD9\x22")   // DC-DC converter on, precharge
+    } else {
+        oled_cmds("\x8D\x14\xD9\xF1")   // charge pump on, precharge
+    }
+    oled_cmds("\xAF")                   // display on
+    // Clear all 132 columns of every page, then mark every character as
+    // unknown so the first frame draws them all.
+    let blank = alloc(132)
+    for p in 0..8 {
+        cmd[0] = 0xB0 | p
+        cmd[1] = 0x00
+        cmd[2] = 0x10
+        i2c_write(OLED, 0x00, cmd, 0, 3)
+        i2c_write(OLED, 0x40, blank, 0, 132)
+    }
+    free(blank)
+    for i in 0..168 {
+        shown[i] = 0
+    }
+}
+
+fn oled_show() {
+    // The SH1106 has 132 columns and the glass shows columns 2 to 129.
+    let x0 = 0
+    if SH1106 {
+        x0 = 2
+    }
+    for i in 0..168 {
+        let c = grid[i]
+        if c != shown[i] {
+            shown[i] = c
+            // the character's 5 columns of pixels, then a blank one
+            let f = (c - 32) * 5
+            for x in 0..5 {
+                glyph[x] = FONT[f + x]
+            }
+            // point the controller at the character's place, then send it
+            let x = x0 + i % 21 * 6
+            cmd[0] = 0xB0 | i / 21      // which page (row of 8 pixels)
+            cmd[1] = x[3..0]            // starting column, low 4 bits
+            cmd[2] = 0x10 | x[7..4]     //   and high 4 bits
+            i2c_write(OLED, 0x00, cmd, 0, 3)
+            i2c_write(OLED, 0x40, glyph, 0, 6)
+        }
+    }
+}
+
+// ---- text ---------------------------------------------------------------------
+fn clear() {
+    for i in 0..168 {
+        grid[i] = ' '
+    }
+}
+
+fn draw_char(col, row, c) {
+    if c < 32 || c > 126 {
+        c = '?'
+    }
+    grid[row * 21 + col] = c
+}
+
+// Draws the first n bytes of s (a str or buf); returns the next column.
+fn draw_text(col, row, s, n) {
+    for i in 0..n {
+        if col + i >= 21 {
+            break
+        }
+        draw_char(col + i, row, s[i])
+    }
+    return col + n
+}
+
+// Draws n bytes of s starting at byte `from`.
+fn draw_part(col, row, s, from, n) {
+    for i in 0..n {
+        draw_char(col + i, row, s[from + i])
+    }
+}
+
+// Draws n bytes of s over rows first..last, breaking lines at spaces.
+fn draw_wrapped(first, last, s, n) {
+    let i = 0
+    let row = first
+    while i < n && row <= last {
+        let end = n
+        if n - i > 21 {
+            end = i + 21
+            let cut = end
+            while cut > i && s[cut] != ' ' {
+                cut -= 1
+            }
+            if cut > i {
+                end = cut
+            }
+        }
+        draw_part(0, row, s, i, end - i)
+        row += 1
+        i = end
+        while i < n && s[i] == ' ' {
+            i += 1
+        }
+    }
+}
+
+fn draw_str(col, row, s) {
+    return draw_text(col, row, s, len(s))
+}
+
+let digits = alloc(12)
+
+// Writes v in decimal into digits, last digit first; returns how many.
+fn to_decimal(v) {
+    let n = 0
+    let neg = v < 0
+    // Count with negative numbers so -2147483648 has no overflow.
+    if !neg {
+        v = -v
+    }
+    while true {
+        digits[n] = '0' - v % 10
+        v = v / 10
+        n += 1
+        if v == 0 {
+            break
+        }
+    }
+    if neg {
+        digits[n] = '-'
+        n += 1
+    }
+    return n
+}
+
+fn draw_int(col, row, v) {
+    let n = to_decimal(v)
+    for i in 0..n {
+        draw_char(col + i, row, digits[n - 1 - i])
+    }
+    return col + n
+}
+
+// Draws v right-aligned so its last digit is in column `end`.
+fn draw_int_right(end, row, v) {
+    let n = to_decimal(v)
+    return draw_int(end - n + 1, row, v)
+}
+
+let HEX = "0123456789ABCDEF"
+
+fn draw_hex(col, row, v) {
+    col = draw_str(col, row, "0x")
+    for i in 0..8 {
+        let hi = 31 - i * 4
+        draw_char(col + i, row, HEX[v[hi..hi - 3]])
+    }
+    return col + 8
+}
+
+// ---- what Glass shows -----------------------------------------------------
+let text = alloc(192)
+
+fn draw_value(row, i) {
+    let kind = prog_kind(i)
+    let v = prog_value(i)
+    if kind == 0 {
+        draw_int_right(9, row, v)
+        draw_hex(11, row, v)
+    } else if kind == 1 {
+        if v != 0 {
+            draw_str(0, row, "true")
+        } else {
+            draw_str(0, row, "false")
+        }
+    } else if kind == 2 {
+        draw_str(0, row, "nil")
+    } else if kind == 3 {
+        draw_str(0, row, "a string")
+    } else if kind == 4 {
+        draw_int(draw_str(0, row, "buf #"), row, v)
+    } else {
+        draw_str(0, row, "a function")
+    }
+}
+
+fn draw_speed(hz) {
+    if hz == 0 {
+        draw_str(15, 0, "paused")
+    } else if hz < 0 {
+        draw_str(18, 0, "max")
+    } else {
+        draw_str(draw_int_right(17, 0, hz) + 1, 0, "Hz")
+    }
+}
+
+fn draw(hz) {
+    clear()
+    // line and speed, the instruction, its source line
+    draw_int(draw_str(0, 0, "line "), 0, prog_line())
+    draw_speed(hz)
+    draw_text(0, 1, text, prog_text("op", text))
+    let c = prog_cycles()
+    draw_int_right(20, 1, c)
+    draw_char(20 - to_decimal(c), 1, '#')
+    draw_text(0, 2, text, prog_text("src", text))
+
+    // the stack: the top three values on the screen, eight on the LEDs
+    let depth = prog_depth()
+    draw_int(draw_str(0, 3, "stack "), 3, depth)
+    for i in 0..3 {
+        if i < depth {
+            draw_value(4 + i, i)
+        }
+    }
+    for y in 0..8 {
+        if y < depth && prog_kind(y) != 2 {
+            led_value(y, prog_value(y))
+        } else {
+            led_value(y, 0)
+        }
+    }
+
+    // the last line the program printed
+    let n = prog_text("out", text)
+    if n > 0 {
+        draw_text(2, 7, text, n)
+        draw_char(0, 7, '>')
+    }
+    led_show()
+    oled_show()
+}
+
+// ---- the clock ---------------------------------------------------------------
+// Instructions per second from the knob: 0 means paused and -1 as fast as
+// possible. In between, each step of the knob doubles the speed.
+fn speed() {
+    let k = knob()
+    if k < 150 {
+        return 0
+    }
+    if k > 3950 {
+        return -1
+    }
+    return 1 << (k - 150) * 11 / 3800
+}
+
+fn wait_for_button() {
+    while pin_read(BUTTON) == 1 {
+        delay(10)
+        if speed() != 0 {
+            return nil      // the knob was turned: start running
+        }
+    }
+    delay(20)               // let the contacts settle
+    while pin_read(BUTTON) == 0 {
+        delay(10)
+    }
+}
+
+// Waits until `ms` after the previous call, so frames are evenly spaced
+// however long drawing took.
+let due = 0
+fn pace(ms) {
+    let now = millis()
+    if due > now {
+        delay(due - now)
+    } else {
+        due = now
+    }
+    due += ms
+}
+
+on tick {
+    let hz = speed()
+    if hz == 0 {
+        draw(hz)
+        wait_for_button()
+    } else if hz < 0 {
+        skip(2000)          // let 2000 instructions run between frames
+        draw(hz)
+    } else if hz <= 25 {
+        draw(hz)            // one frame per instruction
+        pace(1000 / hz)
+    } else {
+        skip(hz / 25 - 1)   // 25 frames a second, hz / 25 instructions each
+        draw(hz)
+        pace(40)
+    }
+}
+
+on start {
+    due = 0
+}
+
+on done {
+    clear()
+    if prog_state() == 2 {
+        draw_str(0, 0, "finished after")
+        draw_int(0, 1, prog_cycles())
+        draw_str(0, 2, "instructions")
+    } else {
+        draw_str(0, 0, "error")
+        draw_wrapped(1, 6, text, prog_text("err", text))
+    }
+    let n = prog_text("out", text)
+    if n > 0 {
+        draw_text(2, 7, text, n)
+        draw_char(0, 7, '>')
+    }
+    oled_show()
+    delay(4000)
+}
+
+// ---- startup ----------------------------------------------------------------
+// The font: 5 columns per character for ASCII 32 to 126, each a byte with
+// bit 0 at the top. Converted from the public-domain X11 5x7 font.
+let FONT = "\x00\x00\x00\x00\x00\x00\x00\x2F\x00\x00\x00\x07\x00\x07\x00\x14\x3E\x14\x3E\x14\x04\x2A\x3E\x2A\x10\x13\x08\x04\x32\x00\x14\x2A\x14\x20\x00\x00\x00\x07\x00\x00\x00\x1E\x21\x00\x00\x00\x21\x1E\x00\x00\x00\x2A\x1C\x2A\x00\x08\x08\x3E\x08\x08\x00\x40\x30\x10\x00\x08\x08\x08\x08\x00\x00\x30\x30\x00\x00\x10\x08\x04\x02\x00\x00\x1E\x21\x1E\x00\x00\x22\x3F\x20\x00\x22\x31\x29\x26\x00\x11\x25\x25\x1B\x00\x0C\x0A\x3F\x08\x00\x17\x25\x25\x19\x00\x1E\x25\x25\x18\x00\x01\x31\x0D\x03\x00\x1A\x25\x25\x1A\x00\x06\x29\x29\x1E\x00\x00\x36\x36\x00\x00\x40\x36\x16\x00\x00\x00\x08\x14\x22\x00\x14\x14\x14\x14\x00\x00\x22\x14\x08\x00\x00\x02\x29\x06\x00\x1E\x21\x2D\x0E\x00\x3E\x09\x09\x3E\x00\x3F\x25\x25\x1A\x00\x1E\x21\x21\x12\x00\x3F\x21\x21\x1E\x00\x3F\x25\x25\x21\x00\x3F\x05\x05\x01\x00\x1E\x21\x29\x3A\x00\x3F\x04\x04\x3F\x00\x00\x21\x3F\x21\x00\x10\x20\x20\x1F\x00\x3F\x0C\x12\x21\x00\x3F\x20\x20\x20\x00\x3F\x06\x06\x3F\x00\x3F\x06\x18\x3F\x00\x1E\x21\x21\x1E\x00\x3F\x09\x09\x06\x00\x1E\x31\x21\x5E\x00\x3F\x09\x19\x26\x00\x12\x25\x29\x12\x00\x00\x01\x3F\x01\x00\x1F\x20\x20\x1F\x00\x0F\x30\x30\x0F\x00\x3F\x18\x18\x3F\x00\x33\x0C\x0C\x33\x00\x00\x07\x38\x07\x00\x31\x29\x25\x23\x00\x00\x3F\x21\x21\x00\x02\x04\x08\x10\x00\x00\x21\x21\x3F\x00\x00\x02\x01\x02\x00\x20\x20\x20\x20\x00\x00\x01\x02\x00\x00\x18\x24\x14\x3C\x00\x3F\x24\x24\x18\x00\x18\x24\x24\x00\x00\x18\x24\x24\x3F\x00\x18\x34\x2C\x08\x00\x08\x3E\x09\x02\x00\x28\x54\x54\x4C\x00\x3F\x04\x04\x38\x00\x00\x24\x3D\x20\x00\x00\x20\x40\x3D\x00\x3F\x08\x14\x20\x00\x00\x21\x3F\x20\x00\x3C\x08\x0C\x38\x00\x3C\x04\x04\x38\x00\x18\x24\x24\x18\x00\x7C\x24\x24\x18\x00\x18\x24\x24\x7C\x00\x3C\x04\x04\x08\x00\x28\x2C\x34\x14\x00\x04\x1F\x24\x20\x00\x1C\x20\x20\x3C\x00\x00\x1C\x20\x1C\x00\x3C\x30\x30\x3C\x00\x24\x18\x18\x24\x00\x0C\x50\x20\x1C\x00\x24\x34\x2C\x24\x00\x00\x04\x1E\x21\x00\x00\x00\x3F\x00\x00\x00\x21\x1E\x04\x00\x02\x01\x02\x01\x00"
+
+// Draw a character onto LED module m, for the orientation check.
+fn led_char(m, c) {
+    let f = (c - 32) * 5
+    for y in 0..8 {
+        let row = 0
+        for x in 0..5 {
+            let column = FONT[f + x]
+            row[6 - x] = column[y]
+        }
+        leds[m * 8 + y] = row
+    }
+}
+
+led_init()
+oled_init()
+for m in 0..4 {
+    led_char(m, '1' + m)
+}
+led_show()
+clear()
+draw_str(0, 0, "Glass")
+draw_str(0, 2, "Turn the knob left to")
+draw_str(0, 3, "pause, and press the")
+draw_str(0, 4, "button to step.")
+oled_show()
+delay(2000)

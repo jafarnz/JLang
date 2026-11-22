@@ -14,11 +14,12 @@ $(BIN): $(SRC) $(HDR)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -o $@ $(SRC)
 
-test: $(BIN)
+test: $(BIN) build/glass_sim
 	@./tests/run.sh $(BIN)
 	@./tests/native.sh $(BIN)
 	@./tests/gnu.sh $(BIN)
 	@./tests/board.sh $(BIN)
+	@./tests/glass.sh build/glass_sim
 
 # Build with AddressSanitizer + UndefinedBehaviorSanitizer and run the
 # tests: catches memory bugs in JLang itself.
@@ -50,3 +51,11 @@ uninstall:
 
 clean:
 	rm -rf build
+
+# Glass, the pocket computer that shows a program running: its desktop
+# simulator. See glass/README.md.
+GLASS_SRC := glass/sim/glass_sim.c glass/core/glass.c $(filter-out src/main.c src/board_sim.c src/rv_%.c,$(SRC))
+
+build/glass_sim: $(GLASS_SRC) $(HDR) glass/core/glass.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -Isrc -Iglass/core -o $@ $(GLASS_SRC)

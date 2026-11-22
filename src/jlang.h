@@ -57,6 +57,28 @@ JlResult jl_emit(JlVM *vm, const char *event);
 JlResult jl_disassemble_or_check(JlVM *vm, const char *source, bool print);
 
 void jl_set_trace(JlVM *vm, bool on);
+
+/*
+ * Stepping: the VM calls the hook before every instruction, with a view
+ * of the machine at that moment. The hook can wait (to run the program
+ * slowly), draw the state somewhere, or return false to stop the program,
+ * which then ends with a "stopped by the host" error. This is what x-ray
+ * mode prints, made available to a host program.
+ */
+typedef struct {
+    int line;           /* source line of the instruction */
+    int offset;         /* its byte offset in the function's bytecode */
+    const char *op;     /* its name, such as "ADD" or "CALL" */
+    const Value *stack; /* the value stack, bottom first */
+    int depth;          /* how many values are on it */
+    int frames;         /* how many function calls are active */
+    uint64_t cycles;    /* instructions executed before this one */
+    uint32_t heap_used; /* bytes of heap the program has allocated */
+    uint32_t heap_size;
+} JlStep;
+
+typedef bool (*JlStepFn)(JlVM *vm, const JlStep *step, void *user_data);
+void jl_set_step_hook(JlVM *vm, JlStepFn fn, void *user_data);
 void jl_print_stats(JlVM *vm);
 int jl_report_leaks(JlVM *vm);
 void *jl_user_data(JlVM *vm);
@@ -68,6 +90,9 @@ void jl_print_value(JlVM *vm, Value v);
 bool jl_new_string(JlVM *vm, const char *chars, uint32_t len, Value *out);
 bool jl_new_buf(JlVM *vm, uint32_t len, Value *out, uint8_t **data);
 bool jl_get_string(JlVM *vm, Value v, const char **chars, uint32_t *len);
+/* The bytes of a buf (writable) or str (read-only). Records an error and
+   returns false for any other value or for freed memory. */
+bool jl_get_bytes(JlVM *vm, const char *fn_name, Value v, uint8_t **data, uint32_t *len);
 bool jl_get_int(JlVM *vm, const char *fn_name, int arg_no, Value v,
                 int32_t *out);
 uint64_t jl_cycles(JlVM *vm);

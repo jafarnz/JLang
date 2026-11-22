@@ -1,0 +1,14 @@
+// The program Glass shows. Watch the Fibonacci numbers grow across the
+// LEDs until they no longer fit in 32 bits and wrap around to a negative
+// number, exactly like a register in a real processor.
+let a = 0
+let b = 1
+let n = 1
+while b > 0 {
+    let next = a + b
+    a = b
+    b = next
+    n += 1
+    printf("fib({}) = {}\n", n, b)
+}
+printf("fib({}) overflowed\n", n)

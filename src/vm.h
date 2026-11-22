@@ -59,6 +59,8 @@ struct JlVM {
     void *user_data;
 
     bool trace;
+    JlStepFn step_hook;
+    void *step_ud;
     bool error_reported;
     char errmsg[512];
 

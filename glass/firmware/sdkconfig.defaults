@@ -1,0 +1,13 @@
+# Glass runs on a Seeed Studio XIAO ESP32-C6, which talks to the computer
+# through the chip's own USB port.
+CONFIG_IDF_TARGET="esp32c6"
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Two VMs, with the display's handler running inside the program's VM.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576
+
+# The VMs run every frame, so build for speed.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Running at full speed never idles, which is fine here.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
