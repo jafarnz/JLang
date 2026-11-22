@@ -301,7 +301,7 @@ event name.
 | Placeholder | Output for 42 |
 |---|---|
 | `{}` | any value, as `print` shows it: `42` |
-| `{d}` / `{d5}` | decimal / padded to width 5: `   42` |
+| `{d}` / `{d5}` / `{d05}` | decimal / padded to width 5 with spaces / with zeros: `   42` / `00042` |
 | `{x}` / `{x4}` | hex / at least 4 digits: `0x2A` / `0x002A` |
 | `{b}` / `{b8}` | binary / at least 8 digits: `0b101010` / `0b00101010` |
 | `{c}` | the byte as a character: `*` |

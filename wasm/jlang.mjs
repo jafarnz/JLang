@@ -41,7 +41,13 @@ export async function loadJLang(source) {
       cstr(src),
       MODES[opts.mode ?? "run"] ?? 0,
       cstr((opts.emits ?? []).join("\n")),
-      cstr(Object.entries(opts.pins ?? {}).map(([p, v]) => `${p}=${v ? 1 : 0}`).join(",")),
+      cstr(
+        [
+          ...Object.entries(opts.pins ?? {}).map(([p, v]) => `${p}=${v ? 1 : 0}`),
+          ...Object.entries(opts.analog ?? {}).map(([p, v]) => `a${p}=${Math.round(v)}`),
+          ...(opts.distance != null ? [`d=${Math.round(opts.distance)}`] : []),
+        ].join(","),
+      ),
       cstr(opts.answer ?? ""),
     ]
     const code = ex.jlw_run(...args, opts.heap ?? 0, opts.stats ? 1 : 0)

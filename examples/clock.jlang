@@ -1,0 +1,16 @@
+// clock.jlang - a stopwatch on the LED panel, built with fmt().
+//
+// millis() counts the milliseconds since the program started. fmt() turns
+// the minutes and seconds into text, with {d02} padding them to two digits.
+
+for i in 0..25 {
+    let s = millis() / 1000
+    let text = fmt("{d02}:{d02}", s / 60 % 60, s % 60)
+    led_clear()
+    led_text(text, 15, 0, "cyan")
+    // A dot that moves along the bottom once a second.
+    led(15 + millis() % 1000 * 30 / 1000, 6, "warm")
+    led_show()
+    free(text)
+    delay(250)
+}

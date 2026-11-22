@@ -1,0 +1,26 @@
+// bounce.jlang - a ball bouncing around the LED panel.
+//
+// The ball has a position and a speed. Each frame adds the speed to the
+// position, and hitting an edge turns the speed around.
+
+let x = 3
+let y = 1
+let dx = 1
+let dy = 1
+
+for frame in 0..240 {
+    led_clear()
+    led(x - dx, y - dy, rgb(40, 20, 0))
+    led(x, y, "orange")
+    led_show()
+    delay(25)
+
+    if x + dx < 0 || x + dx >= led_width() {
+        dx = -dx
+    }
+    if y + dy < 0 || y + dy >= led_height() {
+        dy = -dy
+    }
+    x += dx
+    y += dy
+}

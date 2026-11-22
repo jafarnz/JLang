@@ -1,0 +1,9 @@
+// Zero padding with {d0N}, for clocks and fixed-width numbers.
+printf("{d02}:{d02}\n", 7, 5)
+printf("[{d5}] [{d05}]\n", 42, -42)
+let t = fmt("{d03}", 9)
+print(t)
+free(t)
+// expect: 07:05
+// expect: [   42] [-0042]
+// expect: 009

@@ -1,0 +1,36 @@
+// parking.jlang - a parking sensor with a distance sensor and a buzzer.
+//
+// The closer something is, the longer the bar on the panel and the faster
+// the beeps. In the playground, drag the distance on the board picture.
+// On the command line, try: jlang run examples/parking.jlang --distance 15
+
+let TRIG = 5
+let ECHO = 6
+let BUZZER = 7
+
+for i in 0..6 {
+    let cm = distance(TRIG, ECHO)
+    print("distance:", cm)
+
+    led_clear()
+    let bar = map(clamp(cm, 0, 100), 0, 100, led_width(), 0)
+    for x in 0..bar {
+        let colour = "green"
+        if cm < 20 {
+            colour = "red"
+        } else if cm < 50 {
+            colour = "yellow"
+        }
+        for y in 1..6 {
+            led(x, y, colour)
+        }
+    }
+    led_show()
+
+    if cm >= 0 && cm < 100 {
+        tone(BUZZER, "A5", 60)
+        delay(clamp(cm * 8, 60, 800))
+    } else {
+        delay(500)
+    }
+}

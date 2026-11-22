@@ -1,0 +1,28 @@
+// rainbow.jlang - a rainbow that flows across the LED panel.
+//
+// wheel() turns a number from 0 to 255 into a colour around the colour
+// wheel, so adding x to it spreads the rainbow along the panel.
+
+fn wheel(h) {
+    let n = h % 256
+    if n < 85 {
+        return rgb(255 - n * 3, n * 3, 0)
+    }
+    if n < 170 {
+        n -= 85
+        return rgb(0, 255 - n * 3, n * 3)
+    }
+    n -= 170
+    return rgb(n * 3, 0, 255 - n * 3)
+}
+
+for t in 0..120 {
+    for x in 0..led_width() {
+        let c = wheel(x * 4 + t * 6)
+        for y in 0..led_height() {
+            led(x, y, c)
+        }
+    }
+    led_show()
+    delay(30)
+}

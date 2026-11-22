@@ -107,7 +107,8 @@ EXPORT(jlw_output_len) size_t jlw_output_len(void) { return out_len; }
  * mode:    0 = run, 1 = xray, 2 = dis, 3 = check,
  *          4 = RISC-V assembly, 5 = run on the RISC-V emulator
  * emits:   event names separated by '\n' (may be empty)
- * pins:    "4=1,5=0" (may be empty)
+ * pins:    "4=1,5=0" (may be empty); "a1=3000" sets analog(1) and
+ *          "d=42" sets distance()
  * answer:  reply of the simulated ask() (empty = default)
  * Returns the same exit codes as the jlang command.
  */
@@ -138,9 +139,19 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     opt.max_ms = SIM_SECONDS * 1000;
     for (const char *p = pins; p != NULL && *p;) {
         char *end;
-        long pin = strtol(p, &end, 10);
-        if (*end == '=' && pin >= 0 && pin < SIM_PINS) {
-            opt.pin_inputs[pin] = end[1] == '1' ? 1 : 0;
+        if (*p == 'd' && p[1] == '=') { /* d=CM: what distance() measures */
+            opt.distance_cm = (int)strtol(p + 2, NULL, 10);
+        } else if (*p == 'a') { /* aN=V: what analog(N) reads */
+            long pin = strtol(p + 1, &end, 10);
+            if (*end == '=' && pin >= 0 && pin < SIM_PINS) {
+                long v = strtol(end + 1, NULL, 10);
+                opt.analog_inputs[pin] = (int)(v < 0 ? 0 : v > 4095 ? 4095 : v);
+            }
+        } else {
+            long pin = strtol(p, &end, 10);
+            if (*end == '=' && pin >= 0 && pin < SIM_PINS) {
+                opt.pin_inputs[pin] = end[1] == '1' ? 1 : 0;
+            }
         }
         p = strchr(p, ',');
         if (p) p++;

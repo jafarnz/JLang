@@ -44,7 +44,8 @@ static bool bi_print(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
-/* One {placeholder}: {} {d} {x} {b} {c}, optionally with a width: {x2} {b8}. */
+/* One {placeholder}: {} {d} {x} {b} {c}, optionally with a width: {x2} {b8}.
+ * {d02} pads a decimal with zeros instead of spaces. */
 static bool format_one(JlVM *vm, const char *spec, uint32_t n, Value v) {
     if (n == 0) {
         vm_print_value(vm, v, false);
@@ -52,6 +53,7 @@ static bool format_one(JlVM *vm, const char *spec, uint32_t n, Value v) {
     }
     char kind = spec[0];
     int width = 0;
+    bool zeros = n > 2 && spec[1] == '0';
     for (uint32_t i = 1; i < n; i++) {
         if (spec[i] < '0' || spec[i] > '9' || width > 32) {
             return jl_error(vm, "printf(): bad format {%.*s}", (int)n, spec);
@@ -71,7 +73,8 @@ static bool format_one(JlVM *vm, const char *spec, uint32_t n, Value v) {
     int len = 0;
     switch (kind) {
     case 'd':
-        len = snprintf(buf, sizeof buf, "%*d", width, (int)v.as.i);
+        len = zeros ? snprintf(buf, sizeof buf, "%0*d", width, (int)v.as.i)
+                    : snprintf(buf, sizeof buf, "%*d", width, (int)v.as.i);
         break;
     case 'x':
         len = snprintf(buf, sizeof buf, "0x%0*X", width, (unsigned)u);

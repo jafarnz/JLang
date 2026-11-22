@@ -39,7 +39,7 @@ NOTE: bitwise binds tighter than comparison: `x & 1 == 0` is `(x & 1) == 0`. `+`
 - `mem()` prints heap stats, `memmap()` prints the block layout.
 
 ## Built-ins
-random(lo, hi) inclusive · map(v, a, b, c, d) rescale · clamp(v, lo, hi) · rgb(r, g, b) -> 0xRRGGBB · print(...) · fmt(fmt, ...) -> heap str · printf(fmt, ...) placeholders {} {d} {x} {b} {c} with optional width e.g. {x2} {b8}, `{{ }}` literal braces, no automatic newline · alloc(n) · free(x) (buf, array, heap str) · len(x) · array(n[, v]) · read16 read32 write16 write32 · u8 i8 u16 i16 · mem() · memmap() · cycles() · assert(cond, msg) · emit(name)
+random(lo, hi) inclusive · map(v, a, b, c, d) rescale · clamp(v, lo, hi) · rgb(r, g, b) -> 0xRRGGBB · print(...) · fmt(fmt, ...) -> heap str · printf(fmt, ...) placeholders {} {d} {x} {b} {c} with optional width e.g. {x2} {b8} {d5}, {d05} pads with zeros, `{{ }}` literal braces, no automatic newline · alloc(n) · free(x) (buf, array, heap str) · len(x) · array(n[, v]) · read16 read32 write16 write32 · u8 i8 u16 i16 · mem() · memmap() · cycles() · assert(cond, msg) · emit(name)
 
 ## Board built-ins (simulated on desktop, real on device)
 pin_mode(pin, "out"|"in"|"in_pullup") · pin_write(pin, 0|1) (pin must be "out") · pin_read(pin) (pin must be an input) · delay(ms) (virtual time) · millis() · capture() -> buf (free it) · ask(photo_buf, question_str) -> str (free it) · speak(text, lang="en")
