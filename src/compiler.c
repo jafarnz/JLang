@@ -83,6 +83,11 @@ typedef struct {
     int var_end;
     uint8_t var_set_op;
     uint8_t var_arg;
+
+    /* Where the most recent + ended, so a + chained onto it knows its left
+     * value is a temporary string that can be freed after joining. */
+    int add_end;
+    Chunk *add_chunk;
 } Compiler;
 
 typedef void (*ParseFn)(Compiler *c, bool can_assign);
@@ -563,9 +568,14 @@ static void unary(Compiler *c, bool can_assign) {
 static void binary(Compiler *c, bool can_assign) {
     (void)can_assign;
     TokenType op = c->prev.type;
+    bool left_is_sum = c->add_chunk == chunk(c) && c->add_end == chunk(c)->count;
     parse_precedence(c, (Precedence)(get_rule(op)->prec + 1));
     switch (op) {
-    case TOK_PLUS: emit(c, OP_ADD); break;
+    case TOK_PLUS:
+        emit(c, left_is_sum ? OP_ADD_TEMP : OP_ADD);
+        c->add_end = chunk(c)->count;
+        c->add_chunk = chunk(c);
+        break;
     case TOK_MINUS: emit(c, OP_SUB); break;
     case TOK_STAR: emit(c, OP_MUL); break;
     case TOK_SLASH: emit(c, OP_DIV); break;

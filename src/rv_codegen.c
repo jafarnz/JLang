@@ -656,7 +656,17 @@ static void gen_function(Gen *g, int fi) {
             }
             break;
         }
-        case OP_ADD: binary(g, "add"); pop_kinds(g, 2); push_kind(g, kind_of(K_INT)); break;
+        case OP_ADD:
+        case OP_ADD_TEMP:
+            if (top(g, 0).kind == K_STR || top(g, 1).kind == K_STR) {
+                error(g, "joining strings with + isn't available in native code yet (native programs have no "
+                         "heap); run it with `jlang run` instead");
+                break;
+            }
+            binary(g, "add");
+            pop_kinds(g, 2);
+            push_kind(g, kind_of(K_INT));
+            break;
         case OP_SUB: binary(g, "sub"); pop_kinds(g, 2); push_kind(g, kind_of(K_INT)); break;
         case OP_MUL: binary(g, "mul"); pop_kinds(g, 2); push_kind(g, kind_of(K_INT)); break;
         case OP_DIV:

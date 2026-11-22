@@ -22,7 +22,7 @@
 
 ## Operators (low to high precedence)
 `||` `&&` (short-circuit, give bool) · `==` `!=` · `<` `<=` `>` `>=` (ints) · `|` · `^` · `&` · `<<` `>>` (0..31, >> arithmetic) · `+` `-` · `*` `/` `%` (truncate toward zero; /0 is an error) · unary `-` `!` `~` · call `f()`, index `x[i]`, bit range `x[hi..lo]`.
-NOTE: bitwise binds tighter than comparison: `x & 1 == 0` is `(x & 1) == 0`. There is no string `+`.
+NOTE: bitwise binds tighter than comparison: `x & 1 == 0` is `(x & 1) == 0`. `+` with a str on either side joins as text (numbers printed like print) into a NEW HEAP str that must be freed; in a chain "a" + b + c the intermediate strings are freed automatically. `s += x` leaks the old string. `fmt(fmt, ...)` -> heap str with printf placeholders.
 
 ## Bits
 - `x[i]` on an int reads bit i (0..31) as 0/1. `x[hi..lo]` reads bits hi down to lo.
@@ -39,7 +39,7 @@ NOTE: bitwise binds tighter than comparison: `x & 1 == 0` is `(x & 1) == 0`. The
 - `mem()` prints heap stats, `memmap()` prints the block layout.
 
 ## Built-ins
-random(lo, hi) inclusive · map(v, a, b, c, d) rescale · clamp(v, lo, hi) · rgb(r, g, b) -> 0xRRGGBB · print(...) · printf(fmt, ...) placeholders {} {d} {x} {b} {c} with optional width e.g. {x2} {b8}, `{{ }}` literal braces, no automatic newline · alloc(n) · free(x) (buf, array, heap str) · len(x) · array(n[, v]) · read16 read32 write16 write32 · u8 i8 u16 i16 · mem() · memmap() · cycles() · assert(cond, msg) · emit(name)
+random(lo, hi) inclusive · map(v, a, b, c, d) rescale · clamp(v, lo, hi) · rgb(r, g, b) -> 0xRRGGBB · print(...) · fmt(fmt, ...) -> heap str · printf(fmt, ...) placeholders {} {d} {x} {b} {c} with optional width e.g. {x2} {b8}, `{{ }}` literal braces, no automatic newline · alloc(n) · free(x) (buf, array, heap str) · len(x) · array(n[, v]) · read16 read32 write16 write32 · u8 i8 u16 i16 · mem() · memmap() · cycles() · assert(cond, msg) · emit(name)
 
 ## Board built-ins (simulated on desktop, real on device)
 pin_mode(pin, "out"|"in"|"in_pullup") · pin_write(pin, 0|1) (pin must be "out") · pin_read(pin) (pin must be an input) · delay(ms) (virtual time) · millis() · capture() -> buf (free it) · ask(photo_buf, question_str) -> str (free it) · speak(text, lang="en")

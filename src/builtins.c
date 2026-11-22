@@ -23,8 +23,19 @@ static bool get_buf(JlVM *vm, const char *fn, int arg_no, Value v,
 
 /* ---- output ------------------------------------------------------- */
 
+/* Printing freed memory is a use-after-free like any other access. */
+static bool check_alive(JlVM *vm, Value v) {
+    if (v.type != VAL_BUF && v.type != VAL_ARR && !(v.type == VAL_STR && v.on_heap)) return true;
+    uint8_t *d;
+    uint32_t n;
+    if (heap_get(&vm->heap, v.as.ref, &d, &n) == HEAP_OK) return true;
+    return vm_freed_error(vm, v.as.ref, value_type_name(v));
+}
+
 static bool bi_print(JlVM *vm, int argc, Value *args, Value *out) {
     (void)out;
+    for (int i = 0; i < argc; i++)
+        if (!check_alive(vm, args[i])) return false;
     for (int i = 0; i < argc; i++) {
         if (i > 0) vm_write(vm, false, " ", 1);
         vm_print_value(vm, args[i], false);
@@ -90,12 +101,14 @@ static bool format_one(JlVM *vm, const char *spec, uint32_t n, Value v) {
     return true;
 }
 
-static bool bi_printf(JlVM *vm, int argc, Value *args, Value *out) {
-    (void)out;
+/* Writes fmt with its {} filled in, for printf() and fmt(). */
+static bool format(JlVM *vm, const char *fn, int argc, Value *args) {
+    for (int i = 1; i < argc; i++)
+        if (!check_alive(vm, args[i])) return false;
     const char *f;
     uint32_t n;
     if (argc < 1 || args[0].type != VAL_STR) {
-        return jl_error(vm, "printf(): the first argument must be a format string");
+        return jl_error(vm, "%s(): the first argument must be a format string", fn);
     }
     if (!jl_get_string(vm, args[0], &f, &n)) return vm_freed_error(vm, args[0].as.ref, "str");
 
@@ -115,9 +128,9 @@ static bool bi_printf(JlVM *vm, int argc, Value *args, Value *out) {
             vm_write(vm, false, f + lit, i - lit);
             uint32_t j = i + 1;
             while (j < n && f[j] != '}') j++;
-            if (j >= n) return jl_error(vm, "printf(): a '{' has no matching '}'");
+            if (j >= n) return jl_error(vm, "%s(): a '{' has no matching '}'", fn);
             if (next >= argc) {
-                return jl_error(vm, "printf(): the format has more {} than values passed");
+                return jl_error(vm, "%s(): the format has more {} than values passed", fn);
             }
             if (!format_one(vm, f + i + 1, j - i - 1, args[next++])) return false;
             i = j + 1;
@@ -128,10 +141,26 @@ static bool bi_printf(JlVM *vm, int argc, Value *args, Value *out) {
     }
     vm_write(vm, false, f + lit, n - lit);
     if (next < argc) {
-        return jl_error(vm, "printf(): %d value(s) were passed but the format doesn't use them",
-                        argc - next);
+        return jl_error(vm, "%s(): %d value(s) were passed but the format doesn't use them",
+                        fn, argc - next);
     }
     return true;
+}
+
+static bool bi_printf(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)out;
+    return format(vm, "printf", argc, args);
+}
+
+/* fmt("score: {}", 42) returns the text printf would print, as a heap str. */
+static bool bi_fmt(JlVM *vm, int argc, Value *args, Value *out) {
+    vm_capture_begin(vm);
+    bool ok = format(vm, "fmt", argc, args);
+    if (!ok) {
+        vm->capturing = false;
+        return false;
+    }
+    return vm_capture_end(vm, out);
 }
 
 /* ---- memory ------------------------------------------------------- */
@@ -485,6 +514,7 @@ static bool bi_asm(JlVM *vm, int argc, Value *args, Value *out) {
 void jl_register_core(JlVM *vm) {
     jl_register_native(vm, "print", bi_print, -1);
     jl_register_native(vm, "printf", bi_printf, -1);
+    jl_register_native(vm, "fmt", bi_fmt, -1);
     jl_register_native(vm, "alloc", bi_alloc, 1);
     jl_register_native(vm, "free", bi_free, 1);
     jl_register_native(vm, "len", bi_len, 1);

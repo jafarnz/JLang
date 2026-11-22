@@ -51,6 +51,9 @@ typedef enum {
     OP_SLICE_UPDATE,  /* var[hi..lo] = value, pushes the updated int */
     OP_ON,            /* register an event handler */
     OP_ARRAY,         /* u16 count: make an array of the top count values */
+    OP_ADD_TEMP,      /* + where the left value is the result of the + just before
+                         it: a joined string nothing else can refer to, so it is
+                         freed once it has been joined again */
 
     OP_COUNT
 } OpCode;

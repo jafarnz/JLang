@@ -50,6 +50,7 @@ static const char *const names[OP_COUNT] = {
     [OP_SLICE_UPDATE] = "SLICE_UPDATE",
     [OP_ON] = "ON",
     [OP_ARRAY] = "ARRAY",
+    [OP_ADD_TEMP] = "ADD_TEMP",
 };
 
 const char *opcode_name(uint8_t op) {

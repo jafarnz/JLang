@@ -1,0 +1,23 @@
+// Building strings with + and fmt(). Only the final result needs a free.
+let name = "Ada"
+let score = 42
+let a = "hi " + name
+let b = "score: " + score + " points" + "!"
+let c = fmt("{} scored {d4} ({x})", name, score, score)
+print(a, len(a))
+print(b)
+print(c)
+print(1 + "2", "" + true, "" + nil, "list " + [1, 2])
+free(a)
+free(b)
+free(c)
+// expect: hi Ada 6
+// expect: score: 42 points!
+// expect: Ada scored   42 (0x2A)
+// expect: 12 true nil list [1, 2]
+// expect: leak: str #5 (2 bytes) allocated at line 10 was never freed, and nothing refers to it any more
+// expect: leak: str #6 (4 bytes) allocated at line 10 was never freed, and nothing refers to it any more
+// expect: leak: str #7 (3 bytes) allocated at line 10 was never freed, and nothing refers to it any more
+// expect: leak: array #8 (16 bytes) allocated at line 10 was never freed, and nothing refers to it any more
+// expect: leak: str #9 (11 bytes) allocated at line 10 was never freed, and nothing refers to it any more
+// expect: hint: free() memory from alloc(), arrays and built strings once you're done with it. Memory a global variable still holds at the end is fine, but on a device that runs for days, a leak eventually uses up all memory.

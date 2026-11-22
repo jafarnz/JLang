@@ -59,6 +59,12 @@ struct JlVM {
     void *user_data;
 
     bool trace;
+
+    /* While capturing, program output goes into this buffer instead,
+       which is how fmt() and + on strings build their result. */
+    bool capturing;
+    char *cap;
+    size_t cap_len, cap_size;
     JlStepFn step_hook;
     void *step_ud;
     bool error_reported;
@@ -75,6 +81,9 @@ int vm_global_add(JlVM *vm, const char *name, int len);
 
 void vm_errf(JlVM *vm, const char *fmt, ...) JL_PRINTF(2, 3);
 void vm_write(JlVM *vm, bool to_err, const char *data, size_t len);
+void vm_capture_begin(JlVM *vm);
+/* Ends capturing and turns what was captured into a heap str. */
+bool vm_capture_end(JlVM *vm, Value *out);
 void vm_print_value(JlVM *vm, Value v, bool to_err);
 int vm_current_line(JlVM *vm);
 bool vm_freed_error(JlVM *vm, HeapRef ref, const char *what);

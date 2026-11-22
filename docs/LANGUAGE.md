@@ -251,7 +251,11 @@ print(s[0])            // 104: strings index as bytes
 
 - Escapes: `\n \t \r \0 \\ \" \' \xHH`.
 - Strings are read-only. To build bytes, use a `buf`.
-- There is no `+` for strings; print several values instead: `print("x =", x)`.
+- `+` joins a string with anything, and `fmt("{} = {x}", name, v)` fills in a
+  format string like `printf`. Both return a new heap string you `free`. In a
+  chain like `"x" + y + z`, the strings in the middle are freed for you.
+- `s += "!"` leaves the old string behind; build messages in one expression or
+  with `fmt` instead of adding to them in a loop.
 - String literals live in the program, not on the heap. Strings created at
   runtime by built-ins (like `ask()`) live on the heap and **must be freed**.
 
@@ -274,6 +278,7 @@ event name.
 |---|---|
 | `print(a, b, ...)` | print values separated by spaces, then a newline |
 | `printf(fmt, ...)` | formatted print, **no** automatic newline (see below) |
+| `fmt(fmt, ...)` | the text `printf` would print, as a new heap `str` you free |
 | `alloc(n)` | new `buf` of `n` zeroed bytes |
 | `free(x)` | free a `buf`, an array or a heap `str` |
 | `len(x)` | size of a `buf` or `str` in bytes, or the number of items in an array |

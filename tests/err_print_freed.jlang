@@ -1,0 +1,7 @@
+// Printing a string after freeing it is a use after free.
+// exit: 70
+let s = "x" + 1
+free(s)
+print(s)
+// expect: runtime error (line 5): use after free: this str was freed at line 4 (it was allocated at line 3)
+// expect:   in top-level code, line 5

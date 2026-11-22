@@ -32,7 +32,32 @@ static void std_err(void *ud, const char *d, size_t n) {
 }
 
 void vm_write(JlVM *vm, bool to_err, const char *data, size_t len) {
+    if (vm->capturing && !to_err) {
+        if (vm->cap_len + len > vm->cap_size) {
+            size_t size = vm->cap_size ? vm->cap_size : 64;
+            while (size < vm->cap_len + len) size *= 2;
+            char *grown = realloc(vm->cap, size);
+            if (grown == NULL) return;
+            vm->cap = grown;
+            vm->cap_size = size;
+        }
+        memcpy(vm->cap + vm->cap_len, data, len);
+        vm->cap_len += len;
+        return;
+    }
     (to_err ? vm->err : vm->out)(vm->user_data, data, len);
+}
+
+void vm_capture_begin(JlVM *vm) {
+    vm->capturing = true;
+    vm->cap_len = 0;
+}
+
+bool vm_capture_end(JlVM *vm, Value *out) {
+    vm->capturing = false;
+    if (vm->cap_len > 65535) return jl_error(vm, "that string would be %u bytes long; the limit is 65535",
+                                             (unsigned)vm->cap_len);
+    return jl_new_string(vm, vm->cap ? vm->cap : "", (uint32_t)vm->cap_len, out);
 }
 
 static void vwritef(JlVM *vm, bool to_err, const char *fmt, va_list ap) {
@@ -107,6 +132,7 @@ JlVM *jl_new(const JlConfig *config) {
 
 void jl_free(JlVM *vm) {
     if (vm == NULL) return;
+    free(vm->cap);
     for (int i = 0; i < vm->global_count; i++) free(vm->globals[i].name);
     program_free(&vm->prog);
     heap_destroy(&vm->heap);
@@ -729,7 +755,29 @@ static JlResult run(JlVM *vm, int base) {
 
         /* Integer maths wraps around at 32 bits, like a real CPU.
          * The casts through uint32_t make that well-defined in C. */
-        case OP_ADD: { INT_OPERANDS(OP_ADD); PUSH(int_val((int32_t)((uint32_t)a + (uint32_t)b))); break; }
+        case OP_ADD:
+        case OP_ADD_TEMP: {
+            /* "score: " + 42 joins the two as text, into a new heap str. */
+            if (PEEK(0).type == VAL_STR || PEEK(1).type == VAL_STR) {
+                Value b = POP(), a = POP(), joined;
+                const char *s;
+                uint32_t n;
+                if ((a.type == VAL_STR && !jl_get_string(vm, a, &s, &n)) ||
+                    (b.type == VAL_STR && !jl_get_string(vm, b, &s, &n))) {
+                    vm_freed_error(vm, a.type == VAL_STR && !jl_get_string(vm, a, &s, &n) ? a.as.ref : b.as.ref, "str");
+                    goto error;
+                }
+                vm_capture_begin(vm);
+                vm_print_value(vm, a, false);
+                vm_print_value(vm, b, false);
+                if (!vm_capture_end(vm, &joined)) goto error;
+                /* In "a" + b + c, the "a" + b in the middle is gone once c is joined. */
+                if (op == OP_ADD_TEMP && a.type == VAL_STR && a.on_heap)
+                    heap_release(&vm->heap, a.as.ref, (uint32_t)vm_current_line(vm));
+                PUSH(joined);
+                break;
+            }
+            INT_OPERANDS(OP_ADD); PUSH(int_val((int32_t)((uint32_t)a + (uint32_t)b))); break; }
         case OP_SUB: { INT_OPERANDS(OP_SUB); PUSH(int_val((int32_t)((uint32_t)a - (uint32_t)b))); break; }
         case OP_MUL: { INT_OPERANDS(OP_MUL); PUSH(int_val((int32_t)((uint32_t)a * (uint32_t)b))); break; }
         case OP_DIV: {
