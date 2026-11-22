@@ -8,3 +8,4 @@ boards/*/managed_components/
 glass/firmware/build/
 glass/firmware/sdkconfig
 glass/firmware/sdkconfig.old
+snap-*.ppm
