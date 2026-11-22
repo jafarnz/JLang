@@ -50,6 +50,7 @@ typedef enum {
     OP_SLICE_GET,     /* int[hi..lo]  -> bits hi down to lo */
     OP_SLICE_UPDATE,  /* var[hi..lo] = value, pushes the updated int */
     OP_ON,            /* register an event handler */
+    OP_ARRAY,         /* u16 count: make an array of the top count values */
 
     OP_COUNT
 } OpCode;

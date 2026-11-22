@@ -286,6 +286,31 @@ bool jl_new_buf(JlVM *vm, uint32_t len, Value *out, uint8_t **data) {
     return true;
 }
 
+bool jl_new_array(JlVM *vm, uint32_t n, Value *out, Value **items) {
+    HeapRef ref;
+    uint8_t *data;
+    if (n > 65535) return jl_error(vm, "an array can hold at most 65535 items, not %u", (unsigned)n);
+    if (!new_block(vm, n * (uint32_t)sizeof(Value), BLOCK_ARR, &ref, &data)) return false;
+    *items = (Value *)(void *)data;
+    for (uint32_t i = 0; i < n; i++) (*items)[i] = int_val(0);
+    *out = arr_val(ref);
+    return true;
+}
+
+static bool array_items(JlVM *vm, Value v, Value **items, uint32_t *count) {
+    uint8_t *data;
+    uint32_t len;
+    if (heap_get(&vm->heap, v.as.ref, &data, &len) != HEAP_OK) return vm_freed_error(vm, v.as.ref, "array");
+    *items = (Value *)(void *)data;
+    *count = len / (uint32_t)sizeof(Value);
+    return true;
+}
+
+bool jl_get_array(JlVM *vm, const char *fn_name, Value v, Value **items, uint32_t *count) {
+    if (v.type != VAL_ARR) return jl_error(vm, "%s(): expected an array, got %s", fn_name, value_type_name(v));
+    return array_items(vm, v, items, count);
+}
+
 bool jl_get_int(JlVM *vm, const char *fn_name, int arg_no, Value v, int32_t *out) {
     if (v.type != VAL_INT) {
         return jl_error(vm, "%s(): argument %d must be an int, got %s",
@@ -295,9 +320,43 @@ bool jl_get_int(JlVM *vm, const char *fn_name, int arg_no, Value v, int32_t *out
     return true;
 }
 
-void vm_print_value(JlVM *vm, Value v, bool to_err) {
+static void print_value(JlVM *vm, Value v, bool to_err, int depth);
+
+void vm_print_value(JlVM *vm, Value v, bool to_err) { print_value(vm, v, to_err, 0); }
+
+/* [1, 2, "three"], showing at most the first 32 items and 3 levels deep. */
+static void print_array(JlVM *vm, Value v, bool to_err, int depth) {
+    Value *items;
+    uint32_t n;
+    if (heap_get(&vm->heap, v.as.ref, (uint8_t **)(void *)&items, &n) != HEAP_OK) {
+        vm_write(vm, to_err, "<freed array>", 13);
+        return;
+    }
+    n /= (uint32_t)sizeof(Value);
+    if (depth >= 3) {
+        vm_write(vm, to_err, "[...]", 5);
+        return;
+    }
+    vm_write(vm, to_err, "[", 1);
+    for (uint32_t i = 0; i < n && i < 32; i++) {
+        if (i > 0) vm_write(vm, to_err, ", ", 2);
+        bool quote = items[i].type == VAL_STR;
+        if (quote) vm_write(vm, to_err, "\"", 1);
+        print_value(vm, items[i], to_err, depth + 1);
+        if (quote) vm_write(vm, to_err, "\"", 1);
+    }
+    if (n > 32) {
+        char more[48];
+        int k = snprintf(more, sizeof more, ", ... %u more", (unsigned)(n - 32));
+        vm_write(vm, to_err, more, (size_t)k);
+    }
+    vm_write(vm, to_err, "]", 1);
+}
+
+static void print_value(JlVM *vm, Value v, bool to_err, int depth) {
     char buf[64];
     switch ((ValueType)v.type) {
+    case VAL_ARR: print_array(vm, v, to_err, depth); return;
     case VAL_NIL: vm_write(vm, to_err, "nil", 3); return;
     case VAL_BOOL:
         if (v.as.b) vm_write(vm, to_err, "true", 4);
@@ -363,6 +422,7 @@ static int values_equal(JlVM *vm, Value a, Value b) {
     case VAL_FN:
     case VAL_NATIVE: return a.as.index == b.as.index;
     case VAL_BUF:
+    case VAL_ARR:
         return a.as.ref.handle == b.as.ref.handle && a.as.ref.gen == b.as.ref.gen;
     case VAL_STR: {
         const char *sa, *sb;
@@ -412,8 +472,10 @@ static bool check_index(JlVM *vm, Value idx, uint32_t len, const char *what, int
     int32_t i = idx.as.i;
     if (i < 0 || (uint32_t)i >= len) {
         if (len == 0) return jl_error(vm, "index %d is out of bounds: this %s is empty", (int)i, what);
-        return jl_error(vm, "index %d is out of bounds: this %s has %u bytes, so valid "
-                            "indexes are 0..%u", (int)i, what, (unsigned)len, (unsigned)(len - 1));
+        return jl_error(vm, "index %d is out of bounds: this %s has %u %s, so valid "
+                            "indexes are 0..%u", (int)i, what, (unsigned)len,
+                        strcmp(what, "array") == 0 ? (len == 1 ? "item" : "items") : (len == 1 ? "byte" : "bytes"),
+                        (unsigned)(len - 1));
     }
     *out = i;
     return true;
@@ -773,6 +835,14 @@ static JlResult run(JlVM *vm, int base) {
 
         case OP_INDEX_GET: {
             Value idx = POP(), target = POP();
+            if (target.type == VAL_ARR) {
+                Value *items = NULL;
+                uint32_t n = 0;
+                int32_t i;
+                if (!array_items(vm, target, &items, &n) || !check_index(vm, idx, n, "array", &i)) goto error;
+                PUSH(items[i]);
+                break;
+            }
             if (target.type == VAL_INT) {
                 int32_t bit = 0;
                 if (!check_bit(vm, idx, &bit)) goto error;
@@ -793,6 +863,15 @@ static JlResult run(JlVM *vm, int base) {
                 jl_error(vm, "can't change a bit of a temporary value; store it in "
                              "a variable first, then write var[bit] = 1");
                 goto error;
+            }
+            if (target.type == VAL_ARR) {
+                Value *items = NULL;
+                uint32_t n = 0;
+                int32_t i;
+                if (!array_items(vm, target, &items, &n) || !check_index(vm, idx, n, "array", &i)) goto error;
+                items[i] = v;
+                PUSH(v);
+                break;
             }
             if (!store_byte(vm, target, idx, v)) goto error;
             PUSH(v);
@@ -815,8 +894,26 @@ static JlResult run(JlVM *vm, int base) {
                 PUSH(int_val((int32_t)u));
                 break;
             }
+            if (target.type == VAL_ARR) {
+                Value *items = NULL;
+                uint32_t n = 0;
+                int32_t i;
+                if (!array_items(vm, target, &items, &n) || !check_index(vm, idx, n, "array", &i)) goto error;
+                items[i] = v;
+                PUSH(target);
+                break;
+            }
             if (!store_byte(vm, target, idx, v)) goto error;
             PUSH(target);
+            break;
+        }
+        case OP_ARRAY: {
+            uint16_t n = READ_U16();
+            Value arr, *items;
+            if (!jl_new_array(vm, n, &arr, &items)) goto error;
+            for (uint16_t k = 0; k < n; k++) items[k] = vm->sp[(int)k - (int)n];
+            vm->sp -= n;
+            PUSH(arr);
             break;
         }
         case OP_SLICE_GET: {
@@ -952,22 +1049,47 @@ JlResult jl_disassemble_or_check(JlVM *vm, const char *source, bool print) {
     return JL_OK;
 }
 
+/* Marks the block v refers to, and everything an array holds, as reachable. */
+static void mark(JlVM *vm, Value v, uint8_t *seen) {
+    if ((v.type != VAL_BUF && v.type != VAL_ARR && !(v.type == VAL_STR && v.on_heap)) ||
+        v.as.ref.handle >= vm->heap.handle_cap || seen[v.as.ref.handle])
+        return;
+    uint8_t *data;
+    uint32_t len;
+    if (heap_get(&vm->heap, v.as.ref, &data, &len) != HEAP_OK) return;
+    seen[v.as.ref.handle] = 1;
+    if (v.type == VAL_ARR)
+        for (uint32_t i = 0; i < len / (uint32_t)sizeof(Value); i++) mark(vm, ((Value *)(void *)data)[i], seen);
+}
+
+/*
+ * A leak is memory the program can no longer reach. Blocks that a global
+ * variable still refers to when the program ends are in use, like a
+ * static buffer in C, so only blocks nothing refers to are reported.
+ */
 int jl_report_leaks(JlVM *vm) {
     int leaks = 0;
+    uint8_t *seen = calloc(vm->heap.handle_cap, 1);
+    if (seen != NULL) {
+        for (int g = 0; g < vm->global_count; g++)
+            if (vm->globals[g].defined) mark(vm, vm->globals[g].value, seen);
+    }
     for (uint16_t i = 0; i < vm->heap.handle_cap; i++) {
         const HandleEntry *e = &vm->heap.handles[i];
-        if (!e->live) continue;
+        if (!e->live || (seen != NULL && seen[i])) continue;
         HeapRef ref = {i, e->gen};
         uint8_t *d;
         uint32_t len = 0;
         heap_get(&vm->heap, ref, &d, &len);
-        vm_errf(vm, "leak: %s #%u (%u bytes) allocated at line %u was never freed\n",
-                e->kind == BLOCK_STR ? "str" : "buf", (unsigned)i, (unsigned)len, (unsigned)e->alloc_line);
+        vm_errf(vm, "leak: %s #%u (%u bytes) allocated at line %u was never freed, and nothing refers to it any more\n",
+                heap_kind_name(e->kind), (unsigned)i, (unsigned)len, (unsigned)e->alloc_line);
         leaks++;
     }
+    free(seen);
     if (leaks > 0) {
-        vm_errf(vm, "hint: every alloc() needs a matching free(). On a device that "
-                    "runs for days, a leak eventually uses up all memory.\n");
+        vm_errf(vm, "hint: free() memory from alloc(), arrays and built strings once you're done with it. "
+                    "Memory a global variable still holds at the end is fine, but on a device that runs for "
+                    "days, a leak eventually uses up all memory.\n");
     }
     return leaks;
 }

@@ -15,7 +15,7 @@ for t in "$DIR"/tests/*.jlang "$DIR"/examples/*.jlang; do
     # shellcheck disable=SC2086
     native="$("$BIN" emu "$t" $args --max-cycles 50000000 2>&1)"
     ncode=$?
-    if [[ $ncode -eq 65 ]] && grep -q "isn't available in native code\|isn't supported in native code\|must be written directly as a string literal\|can't hold a string" <<<"$native"; then
+    if [[ $ncode -eq 65 ]] && grep -q "isn't available in native code\|aren't available in native code\|isn't supported in native code\|must be written directly as a string literal\|can't hold a string" <<<"$native"; then
         skip=$((skip + 1))
         continue
     fi

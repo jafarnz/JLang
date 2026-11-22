@@ -14,7 +14,7 @@
  *   prog_line()          source line of the next instruction
  *   prog_depth()         values on the program's stack
  *   prog_value(i)        stack value i (0 = top) as an int
- *   prog_kind(i)         0 int, 1 bool, 2 nil, 3 str, 4 buf, 5 fn
+ *   prog_kind(i)         0 int, 1 bool, 2 nil, 3 str, 4 buf, 5 fn, 6 array
  *   prog_frames()        active function calls
  *   prog_cycles()        instructions executed so far
  *   prog_heap()          heap bytes the program has allocated

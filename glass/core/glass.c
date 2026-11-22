@@ -149,6 +149,7 @@ static bool b_value(JlVM *vm, int argc, Value *args, Value *out) {
         case VAL_INT: n = v->as.i; break;
         case VAL_BOOL: n = v->as.b; break;
         case VAL_STR:
+        case VAL_ARR:
         case VAL_BUF: n = v->on_heap || v->type == VAL_BUF ? v->as.ref.handle : v->as.index; break;
         case VAL_FN:
         case VAL_NATIVE: n = v->as.index; break;
@@ -165,7 +166,7 @@ static bool b_kind(JlVM *vm, int argc, Value *args, Value *out) {
     if (!jl_get_int(vm, "prog_kind", 1, args[0], &i)) return false;
     const Value *v = stack_value(i);
     static const int kinds[] = {[VAL_NIL] = 2, [VAL_BOOL] = 1, [VAL_INT] = 0, [VAL_STR] = 3,
-                                [VAL_BUF] = 4, [VAL_FN] = 5, [VAL_NATIVE] = 5};
+                                [VAL_BUF] = 4, [VAL_FN] = 5, [VAL_NATIVE] = 5, [VAL_ARR] = 6};
     *out = int_val(v ? kinds[v->type] : 2);
     return true;
 }

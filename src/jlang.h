@@ -93,6 +93,10 @@ void jl_outf(JlVM *vm, const char *fmt, ...) JL_PRINTF(2, 3);
 void jl_print_value(JlVM *vm, Value v);
 bool jl_new_string(JlVM *vm, const char *chars, uint32_t len, Value *out);
 bool jl_new_buf(JlVM *vm, uint32_t len, Value *out, uint8_t **data);
+/* A new array of n items, all 0. Set them through *items. */
+bool jl_new_array(JlVM *vm, uint32_t n, Value *out, Value **items);
+/* The items of an array. Records an error for anything else. */
+bool jl_get_array(JlVM *vm, const char *fn_name, Value v, Value **items, uint32_t *count);
 bool jl_get_string(JlVM *vm, Value v, const char **chars, uint32_t *len);
 /* The bytes of a buf (writable) or str (read-only). Records an error and
    returns false for any other value or for freed memory. */

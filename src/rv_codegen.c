@@ -481,7 +481,7 @@ static uint16_t u16_at(const uint8_t *code, int off) {
 
 static int op_size(uint8_t op) {
     switch (op) {
-    case OP_CONST: case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_LOOP: return 3;
+    case OP_CONST: case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_LOOP: case OP_ARRAY: return 3;
     case OP_GET_LOCAL: case OP_SET_LOCAL: case OP_GET_GLOBAL: case OP_SET_GLOBAL:
     case OP_DEF_GLOBAL: case OP_CALL: return 2;
     default: return 1;
@@ -821,6 +821,10 @@ static void gen_function(Gen *g, int fi) {
         case OP_ON:
             out(g, "    addi s1, s1, -8\n");
             pop_kinds(g, 2);
+            break;
+        case OP_ARRAY:
+            error(g, "arrays aren't available in native code yet (native programs have no heap); "
+                     "run it with `jlang run` instead");
             break;
         default:
             error(g, "instruction %u isn't supported in native code", op);

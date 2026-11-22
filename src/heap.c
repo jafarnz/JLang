@@ -210,3 +210,7 @@ uint32_t heap_largest_free(const Heap *h) {
     }
     return best;
 }
+
+const char *heap_kind_name(uint8_t kind) {
+    return kind == BLOCK_STR ? "str" : kind == BLOCK_ARR ? "array" : "buf";
+}

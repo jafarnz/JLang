@@ -49,6 +49,7 @@ static const char *const names[OP_COUNT] = {
     [OP_SLICE_GET] = "SLICE_GET",
     [OP_SLICE_UPDATE] = "SLICE_UPDATE",
     [OP_ON] = "ON",
+    [OP_ARRAY] = "ARRAY",
 };
 
 const char *opcode_name(uint8_t op) {
@@ -83,6 +84,11 @@ int disassemble_instruction(JlVM *vm, int fn, int offset) {
         jl_outf(vm, "%-14s %5u   ", name, idx);
         print_constant(vm, ch->consts[idx]);
         jl_outf(vm, "\n");
+        return offset + 3;
+    }
+    case OP_ARRAY: {
+        uint16_t n = (uint16_t)((ch->code[offset + 1] << 8) | ch->code[offset + 2]);
+        jl_outf(vm, "%-14s %5u   (values)\n", name, n);
         return offset + 3;
     }
     case OP_GET_LOCAL:

@@ -682,9 +682,24 @@ static void index_(Compiler *c, bool can_assign) {
     }
 }
 
+/* [a, b, c]: an array on the heap. A trailing comma is allowed. */
+static void array_literal(Compiler *c, bool can_assign) {
+    (void)can_assign;
+    int n = 0;
+    while (!check(c, TOK_RBRACKET) && !check(c, TOK_EOF)) {
+        expression(c);
+        if (++n > 65535) error(c, "too many items in one array literal (max 65535); use array(n) instead");
+        if (!match(c, TOK_COMMA)) break;
+    }
+    consume(c, TOK_RBRACKET, "expected ']' after the array's items");
+    emit(c, OP_ARRAY);
+    emit(c, (uint8_t)(n >> 8));
+    emit(c, (uint8_t)n);
+}
+
 static const ParseRule rules[TOK_COUNT] = {
     [TOK_LPAREN] = {grouping, call, PREC_CALL},
-    [TOK_LBRACKET] = {NULL, index_, PREC_CALL},
+    [TOK_LBRACKET] = {array_literal, index_, PREC_CALL},
     [TOK_MINUS] = {unary, binary, PREC_TERM},
     [TOK_PLUS] = {NULL, binary, PREC_TERM},
     [TOK_STAR] = {NULL, binary, PREC_FACTOR},

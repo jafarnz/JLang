@@ -37,10 +37,11 @@ Version 0.1. Everything here is tested in [`tests/`](../tests).
 | `int` | `42`, `0xFF`, `0b1010`, `'A'` | 32-bit signed, wraps on overflow |
 | `str` | `"hello"` | read-only bytes |
 | `buf` | `alloc(16)` | mutable bytes on the JLang heap |
+| `array` | `[1, 2, 3]` | a list of values of any type, on the JLang heap |
 | `fn` | `fn add(a, b) { ... }` | functions are values |
 | built-in | `print` | functions written in C by the host |
 
-Every value is 8 bytes. `str` and `buf` values are references to data on the heap
+Every value is 8 bytes. `str`, `buf` and array values are references to data on the heap
 (or, for string literals, in the program's constant table).
 
 **Truthiness** follows C: `nil`, `false` and `0` are false; everything else is true.
@@ -198,8 +199,12 @@ JLang checks every access:
 | freeing twice | `double free: this buf was already freed at line 3 ...` |
 | index outside the buffer | `index 8 is out of bounds: this buf has 8 bytes, so valid indexes are 0..7` |
 | storing 300 in a byte | `300 doesn't fit in a byte (0..255). Hint: use u8(v) or v & 0xFF ...` |
-| forgetting to free | at exit: `leak: buf #0 (8 bytes) allocated at line 1 was never freed` |
+| losing memory without freeing it | at exit: `leak: buf #0 (8 bytes) allocated at line 2 was never freed, and nothing refers to it any more` |
 | heap full / fragmented | `out of memory: alloc(150) failed. 152 bytes are free in total, but the largest free block is only 100 bytes. The heap is fragmented` |
+
+Memory a global variable still refers to when the program ends isn't a leak:
+a buffer kept for the program's whole life is like a static array in C. Only
+memory nothing refers to any more is reported.
 
 How this works: a `buf` value isn't a raw address but a **handle** plus a
 **generation number**. Freeing a block bumps its generation, so every old
@@ -216,6 +221,25 @@ read16(buf, 4)
 ```
 
 `mem()` prints heap usage; `memmap()` prints every block and free gap.
+
+## Arrays
+
+```jlang
+let colours = [0xFF0000, 0x00FF00, 0x0000FF]
+colours[1] = 0xFFFF00
+let grid = [[0, 1], [1, 0]]
+grid[1][0] = 5
+let zeros = array(8)        // 8 items, all 0
+let dots = array(4, "x")    // 4 items, all "x"
+print(len(colours), grid)
+free(zeros)
+```
+
+- An array holds values of any type. It lives on the heap, 8 bytes per item.
+- `len(a)` is the number of items; `free(a)` releases it; indexing past the end
+  or after `free` is an error on that line.
+- `==` is true only for the same array.
+- Not available in native code yet.
 
 ## Strings
 
@@ -251,8 +275,9 @@ event name.
 | `print(a, b, ...)` | print values separated by spaces, then a newline |
 | `printf(fmt, ...)` | formatted print, **no** automatic newline (see below) |
 | `alloc(n)` | new `buf` of `n` zeroed bytes |
-| `free(x)` | free a `buf` or a heap `str` |
-| `len(x)` | size of a `buf` or `str` in bytes |
+| `free(x)` | free a `buf`, an array or a heap `str` |
+| `len(x)` | size of a `buf` or `str` in bytes, or the number of items in an array |
+| `array(n)` / `array(n, v)` | a new array of `n` items, all 0 or all `v` |
 | `read16(buf, off)` / `read32(buf, off)` | read a little-endian 16/32-bit value |
 | `write16(buf, off, v)` / `write32(buf, off, v)` | write one |
 | `u8(v)` `i8(v)` `u16(v)` `i16(v)` | explicit-width conversions |

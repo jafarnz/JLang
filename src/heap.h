@@ -25,14 +25,17 @@
 
 #include "value.h"
 
-enum { BLOCK_BUF = 0, BLOCK_STR = 1 };
+enum { BLOCK_BUF = 0, BLOCK_STR = 1, BLOCK_ARR = 2 };
+
+/* "buf", "str" or "array" */
+const char *heap_kind_name(uint8_t kind);
 
 typedef struct {
     uint32_t size;   /* payload capacity in bytes (multiple of 4) */
     uint32_t len;    /* bytes the program asked for */
     uint16_t handle; /* which handle owns this block (if used) */
     uint8_t used;    /* 1 = allocated, 0 = free */
-    uint8_t kind;    /* BLOCK_BUF or BLOCK_STR */
+    uint8_t kind;    /* BLOCK_BUF, BLOCK_STR or BLOCK_ARR */
 } BlockHeader;
 
 #define HEAP_HDR ((uint32_t)sizeof(BlockHeader))

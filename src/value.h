@@ -24,7 +24,8 @@ typedef enum {
     VAL_STR,    /* text: a string literal or a heap string */
     VAL_BUF,    /* raw bytes on the JLang heap, from alloc() */
     VAL_FN,     /* a function written in JLang */
-    VAL_NATIVE  /* a built-in function written in C */
+    VAL_NATIVE, /* a built-in function written in C */
+    VAL_ARR     /* a list of values on the JLang heap */
 } ValueType;
 
 /*
@@ -90,6 +91,14 @@ static inline Value heap_str_val(HeapRef ref) {
 static inline Value buf_val(HeapRef ref) {
     Value v = nil_val();
     v.type = VAL_BUF;
+    v.on_heap = 1;
+    v.as.ref = ref;
+    return v;
+}
+
+static inline Value arr_val(HeapRef ref) {
+    Value v;
+    v.type = VAL_ARR;
     v.on_heap = 1;
     v.as.ref = ref;
     return v;

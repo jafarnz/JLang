@@ -1,0 +1,6 @@
+// Indexing past the end of an array says how many items it has.
+// exit: 70
+let a = [10, 20, 30]
+print(a[3])
+// expect: runtime error (line 4): index 3 is out of bounds: this array has 3 items, so valid indexes are 0..2
+// expect:   in top-level code, line 4

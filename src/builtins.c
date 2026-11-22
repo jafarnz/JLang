@@ -171,8 +171,8 @@ static bool bi_free(JlVM *vm, int argc, Value *args, Value *out) {
     if (v.type == VAL_STR && !v.on_heap) {
         return jl_error(vm, "free(): string literals are not on the heap and can't be freed");
     }
-    if (v.type != VAL_BUF && v.type != VAL_STR) {
-        return jl_error(vm, "free() expects a buf or a heap string, got %s",
+    if (v.type != VAL_BUF && v.type != VAL_STR && v.type != VAL_ARR) {
+        return jl_error(vm, "free() expects a buf, an array or a heap string, got %s",
                         value_type_name(v));
     }
     HeapStatus st = heap_release(&vm->heap, v.as.ref, (uint32_t)vm_current_line(vm));
@@ -203,7 +203,14 @@ static bool bi_len(JlVM *vm, int argc, Value *args, Value *out) {
         *out = int_val((int32_t)len);
         return true;
     }
-    return jl_error(vm, "len() expects a buf or str, got %s", value_type_name(v));
+    if (v.type == VAL_ARR) {
+        Value *items;
+        uint32_t n;
+        if (!jl_get_array(vm, "len", v, &items, &n)) return false;
+        *out = int_val((int32_t)n);
+        return true;
+    }
+    return jl_error(vm, "len() expects a buf, str or array, got %s", value_type_name(v));
 }
 
 /* read16/read32/write16/write32: multi-byte values, little-endian
@@ -308,7 +315,7 @@ static bool bi_memmap(JlVM *vm, int argc, Value *args, Value *out) {
             in_free = false;
         }
         jl_outf(vm, "0x%04X %6u   %s #%u, %u bytes used, allocated at line %u\n",
-                (unsigned)bi.off, (unsigned)bi.size, bi.kind == BLOCK_STR ? "str" : "buf",
+                (unsigned)bi.off, (unsigned)bi.size, heap_kind_name(bi.kind),
                 (unsigned)bi.handle, (unsigned)bi.len, (unsigned)(h->handles[bi.handle].alloc_line));
     }
     if (in_free) jl_outf(vm, "0x%04X %6u   free\n", (unsigned)free_start, (unsigned)free_size);
@@ -440,6 +447,19 @@ static bool bi_clamp(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* array(n) or array(n, value): a new array of n items, all 0 or all value. */
+static bool bi_array(JlVM *vm, int argc, Value *args, Value *out) {
+    int32_t n;
+    if (argc < 1 || argc > 2) return jl_error(vm, "array() takes 1 or 2 arguments: the size and an optional value");
+    if (!jl_get_int(vm, "array", 1, args[0], &n)) return false;
+    if (n < 0 || n > 65535) return jl_error(vm, "array(): the size must be 0..65535, got %d", (int)n);
+    Value *items;
+    if (!jl_new_array(vm, (uint32_t)n, out, &items)) return false;
+    if (argc == 2)
+        for (int32_t i = 0; i < n; i++) items[i] = args[1];
+    return true;
+}
+
 /* rgb(r, g, b): a colour as 0xRRGGBB, each part 0..255. */
 static bool bi_rgb(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
@@ -486,4 +506,5 @@ void jl_register_core(JlVM *vm) {
     jl_register_native(vm, "map", bi_map, 5);
     jl_register_native(vm, "clamp", bi_clamp, 3);
     jl_register_native(vm, "rgb", bi_rgb, 3);
+    jl_register_native(vm, "array", bi_array, -1);
 }

@@ -1,0 +1,30 @@
+// Arrays: literals, nesting, assignment, len, array(), printing.
+let colors = [0xFF0000, 0x00FF00, rgb(0, 0, 255)]
+print(len(colors), colors[2])
+colors[0] += 1
+colors[1] = "green"
+print(colors)
+let grid = [
+    [0, 1, 0],
+    [1, 1, 1],
+]
+grid[1][0] = 5
+print(grid, len(grid[0]))
+print([], array(3), array(2, true))
+let words = ["a", "b"]
+print(words)
+let t = [1]
+print(t == t, [2] == [2])
+free(t)
+// expect: 3 255
+// expect: [16711681, "green", 255]
+// expect: [[0, 1, 0], [5, 1, 1]] 3
+// expect: [] [0, 0, 0] [true, true]
+// expect: ["a", "b"]
+// expect: true false
+// expect: leak: array #4 (0 bytes) allocated at line 13 was never freed, and nothing refers to it any more
+// expect: leak: array #5 (24 bytes) allocated at line 13 was never freed, and nothing refers to it any more
+// expect: leak: array #6 (16 bytes) allocated at line 13 was never freed, and nothing refers to it any more
+// expect: leak: array #9 (8 bytes) allocated at line 17 was never freed, and nothing refers to it any more
+// expect: leak: array #10 (8 bytes) allocated at line 17 was never freed, and nothing refers to it any more
+// expect: hint: free() memory from alloc(), arrays and built strings once you're done with it. Memory a global variable still holds at the end is fine, but on a device that runs for days, a leak eventually uses up all memory.
