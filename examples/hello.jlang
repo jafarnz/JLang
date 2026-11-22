@@ -1,5 +1,5 @@
-// hello.jl - the basics in 20 lines.
-// Run: jlang run examples/hello.jl
+// hello.jlang - the basics in 20 lines.
+// Run: jlang run examples/hello.jlang
 
 print("Hello from JLang!")
 

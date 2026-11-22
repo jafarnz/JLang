@@ -1,5 +1,5 @@
-// blink.jl - the "hello world" of hardware.
-// Run: jlang run examples/blink.jl
+// blink.jlang - the "hello world" of hardware.
+// Run: jlang run examples/blink.jlang
 // The simulator uses virtual time: delay(500) is instant, but millis()
 // still advances, so you can see the timing your code would have.
 

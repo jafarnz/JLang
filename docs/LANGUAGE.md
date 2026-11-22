@@ -22,7 +22,7 @@ Version 0.1. Everything here is tested in [`tests/`](../tests).
 
 ## Source files
 
-- Files use the `.jl` extension and UTF-8 text.
+- Files use the `.jlang` extension and UTF-8 text.
 - Comments: `// to end of line` and `/* block */`.
 - There are no semicolons. Statements end where the grammar says they end, so
   one statement per line is the convention.
@@ -47,7 +47,7 @@ Every value is 8 bytes. `str` and `buf` values are references to data on the hea
 
 ## Numbers
 
-```jl
+```jlang
 let a = 1_000_000      // underscores are ignored
 let b = 0x7F           // hex
 let c = 0b1010_0001    // binary
@@ -90,7 +90,7 @@ Compound assignment: `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`.
 
 ## Variables
 
-```jl
+```jlang
 let x = 5          // declare and assign
 let y              // declare; starts as nil
 x = x + 1
@@ -105,7 +105,7 @@ x += 1
 
 ## Control flow
 
-```jl
+```jlang
 if temp > 30 {
     fan_on()
 } else if temp < 20 {
@@ -130,7 +130,7 @@ range runs zero times.
 
 ## Functions
 
-```jl
+```jlang
 fn add(a, b) {
     return a + b
 }
@@ -152,7 +152,7 @@ fn log_value(v) {
 Ints can be read and written **bit by bit**, using the same notation as
 datasheets and Verilog.
 
-```jl
+```jlang
 let r = 0
 r[3] = 1             // set bit 3        -> 0b1000
 r[3] = 0             // clear bit 3
@@ -183,7 +183,7 @@ Explicit-width conversions keep the low bits and re-interpret them:
 JLang gives every program a **fixed-size heap** (64 KB by default, set with
 `--heap`), like the RAM of a microcontroller. You manage it yourself:
 
-```jl
+```jlang
 let buf = alloc(8)      // 8 bytes, zeroed
 buf[0] = 0xAA           // bytes are 0..255
 print(len(buf))         // 8
@@ -208,7 +208,7 @@ reference stops matching. See [DESIGN.md](DESIGN.md#the-heap).
 Multi-byte values are stored **little-endian** (lowest byte first), like the
 ESP32 and x86:
 
-```jl
+```jlang
 write32(buf, 0, 0x11223344)   // buf[0] == 0x44, buf[3] == 0x11
 read32(buf, 0)                // 0x11223344
 write16(buf, 4, 0xBEEF)
@@ -219,7 +219,7 @@ read16(buf, 4)
 
 ## Strings
 
-```jl
+```jlang
 let s = "héllo\n"
 print(len(s))          // 7: length in bytes (é is 2 bytes in UTF-8)
 print(s[0])            // 104: strings index as bytes
@@ -233,7 +233,7 @@ print(s[0])            // 104: strings index as bytes
 
 ## Events
 
-```jl
+```jlang
 on button {
     print("pressed")
 }
@@ -327,3 +327,4 @@ Defaults, all changeable when building JLang (see `src/common.h`):
 | locals per function | 256 |
 | constants per function | 65536 |
 | event handlers | 16 |
+| instructions per run | unlimited (`--max-cycles <n>` to cap; the browser playground caps at 50 million) |

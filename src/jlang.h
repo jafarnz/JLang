@@ -35,6 +35,9 @@ typedef bool (*JlNativeFn)(JlVM *vm, int argc, Value *args, Value *out);
 typedef struct {
     uint32_t heap_size;   /* bytes for the JLang heap */
     uint16_t max_handles; /* max live heap blocks */
+    uint64_t max_cycles;  /* stop after this many instructions (0 = no limit).
+                             Works like a watchdog: an endless loop becomes
+                             an error instead of a frozen device. */
     JlWriteFn out;        /* program output (NULL = stdout) */
     JlWriteFn err;        /* errors and warnings (NULL = stderr) */
     void *user_data;      /* passed to out/err and available to natives */

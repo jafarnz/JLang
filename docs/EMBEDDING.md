@@ -12,7 +12,7 @@ built-ins with the same names, so scripts run unchanged on both.
 │        │ exposed as built-ins: capture() ask() speak() ...     │
 │        ▼                                                       │
 │  ┌──────────────── JLang VM ────────────────┐                  │
-│  │ behaviour script from SD card (iris.jl)  │  fixed heap      │
+│  │ behaviour script on SD card: iris.jlang  │  fixed heap      │
 │  └──────────────────────────────────────────┘                  │
 │        ▲                                                       │
 │ button interrupt ──► jl_emit(vm, "bus_button")                 │
@@ -40,7 +40,7 @@ void app_main(void) {
     JlVM *vm = jl_new(&cfg);
     jl_register_native(vm, "led", my_led, 1);
 
-    char *script = read_file("/sdcard/main.jl");
+    char *script = read_file("/sdcard/main.jlang");
     if (jl_run_source(vm, script) != JL_OK) {
         // the error was printed; the firmware keeps running
     }

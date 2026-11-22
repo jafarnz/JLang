@@ -1,5 +1,5 @@
-// registers.jl - bit slicing, the way hardware registers really work.
-// Run: jlang run examples/registers.jl
+// registers.jlang - bit slicing, the way hardware registers really work.
+// Run: jlang run examples/registers.jlang
 //
 // Many chips are configured by writing bit fields inside one register.
 // Here is a made-up sensor CONFIG register (8 bits):

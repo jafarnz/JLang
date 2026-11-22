@@ -73,6 +73,7 @@ void vm_errf(JlVM *vm, const char *fmt, ...) {
 
 void jl_default_config(JlConfig *c) {
     c->heap_size = JL_DEFAULT_HEAP;
+    c->max_cycles = 0;
     c->max_handles = JL_HANDLES_MAX;
     c->out = NULL;
     c->err = NULL;
@@ -99,6 +100,7 @@ JlVM *jl_new(const JlConfig *config) {
     vm->out = config->out ? config->out : std_out;
     vm->err = config->err ? config->err : std_err;
     vm->user_data = config->user_data;
+    vm->max_cycles = config->max_cycles;
     jl_register_core(vm);
     return vm;
 }
@@ -577,7 +579,11 @@ static JlResult run(JlVM *vm, int base) {
             disassemble_instruction(vm, frame->fn, (int)(frame->ip - CHUNK()->code));
         }
         uint8_t op = READ_BYTE();
-        vm->cycles++;
+        if (++vm->cycles > vm->max_cycles && vm->max_cycles != 0) {
+            jl_error(vm, "stopped after %llu instructions. Is there a loop that "
+                         "never ends?", (unsigned long long)vm->max_cycles);
+            goto error;
+        }
         if (op < OP_COUNT) vm->op_counts[op]++;
 
         switch (op) {

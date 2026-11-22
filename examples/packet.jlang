@@ -1,5 +1,5 @@
-// packet.jl - building a binary message with manual memory.
-// Run: jlang run examples/packet.jl
+// packet.jlang - building a binary message with manual memory.
+// Run: jlang run examples/packet.jlang
 //
 // Devices talk in bytes. This builds a small sensor packet:
 //   [0]     start byte 0xAA

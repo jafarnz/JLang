@@ -1,0 +1,8 @@
+// args: --max-cycles 1000
+// exit: 70
+let n = 0
+while true {
+    n += 1
+}
+// expect: runtime error (line 5): stopped after 1000 instructions. Is there a loop that never ends?
+// expect:   in top-level code, line 5

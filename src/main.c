@@ -2,10 +2,10 @@
  * main.c - the `jlang` command-line tool.
  *
  *   jlang new blinky        create a starter project
- *   jlang run main.jl       run a script on the simulated board
- *   jlang check main.jl     only check for errors (fast; good for editors and AI agents)
- *   jlang xray main.jl      run and show every instruction and the stack
- *   jlang dis main.jl       show the bytecode without running
+ *   jlang run main.jlang    run a script on the simulated board
+ *   jlang check main.jlang  only check for errors (fast; good for editors and AI agents)
+ *   jlang xray main.jlang   run and show every instruction and the stack
+ *   jlang dis main.jlang    show the bytecode without running
  *   jlang repl              type JLang and see results immediately
  */
 #define _POSIX_C_SOURCE 200809L
@@ -32,6 +32,7 @@ typedef struct {
     const char *command;
     const char *file;
     uint32_t heap;
+    uint64_t max_cycles;
     bool stats;
     bool no_leak_check;
     const char *emits[MAX_EMITS];
@@ -44,22 +45,23 @@ static void usage(FILE *f) {
         "JLang " JL_VERSION " - a small language for learning how hardware really works\n"
         "\n"
         "usage:\n"
-        "  jlang new <name>           create a starter project in ./<name>\n"
-        "  jlang run <file.jl>        run a script on the simulated board\n"
-        "  jlang check <file.jl>      check for errors without running\n"
-        "  jlang xray <file.jl>       run, showing every instruction and the stack\n"
-        "  jlang dis <file.jl>        print the compiled bytecode\n"
-        "  jlang repl                 interactive prompt\n"
+        "  jlang new <name>              create a starter project in ./<name>\n"
+        "  jlang run <file.jlang>        run a script on the simulated board\n"
+        "  jlang check <file.jlang>      check for errors without running\n"
+        "  jlang xray <file.jlang>       run, showing every instruction and the stack\n"
+        "  jlang dis <file.jlang>        print the compiled bytecode\n"
+        "  jlang repl                    interactive prompt\n"
         "  jlang version\n"
         "\n"
         "options for run / xray:\n"
-        "  --emit <event>             after the script, fire an event (repeatable)\n"
-        "  --pin <n>=<0|1>            value the simulated pin n reads as input\n"
-        "  --answer <text>            what the simulated ask() replies\n"
-        "  --heap <bytes>             heap size (default %u)\n"
-        "  --realtime                 make delay() actually wait\n"
-        "  --stats                    print instruction counts and heap use\n"
-        "  --no-leak-check            don't report unfreed memory at exit\n",
+        "  --emit <event>                after the script, fire an event (repeatable)\n"
+        "  --pin <n>=<0|1>               value the simulated pin n reads as input\n"
+        "  --answer <text>               what the simulated ask() replies\n"
+        "  --heap <bytes>                heap size (default %u)\n"
+        "  --max-cycles <n>              stop after n instructions (catches endless loops)\n"
+        "  --realtime                    make delay() actually wait\n"
+        "  --stats                       print instruction counts and heap use\n"
+        "  --no-leak-check               don't report unfreed memory at exit\n",
         JL_DEFAULT_HEAP);
 }
 
@@ -123,6 +125,14 @@ static bool parse_args(int argc, char **argv, Options *o) {
                 return false;
             }
             o->heap = (uint32_t)v;
+        } else if (strcmp(a, "--max-cycles") == 0 && has_value) {
+            char *end;
+            unsigned long long v = strtoull(argv[++i], &end, 10);
+            if (*end != '\0' || v == 0) {
+                fprintf(stderr, "jlang: --max-cycles must be a positive number\n");
+                return false;
+            }
+            o->max_cycles = v;
         } else if (strcmp(a, "--pin") == 0 && has_value) {
             int pin, val;
             char extra;
@@ -149,6 +159,7 @@ static JlVM *make_vm(const Options *o) {
     JlConfig cfg;
     jl_default_config(&cfg);
     cfg.heap_size = o->heap;
+    cfg.max_cycles = o->max_cycles;
     JlVM *vm = jl_new(&cfg);
     if (vm == NULL) {
         fprintf(stderr, "jlang: could not create the VM (out of memory?)\n");
@@ -275,8 +286,8 @@ static int repl(const Options *o) {
 /* ---- jlang new ----------------------------------------------------- */
 
 static const char *STARTER_MAIN =
-    "// main.jl - your first JLang program.\n"
-    "// Run it:   jlang run main.jl --emit button\n"
+    "// main.jlang - your first JLang program.\n"
+    "// Run it:   jlang run main.jlang --emit button\n"
     "\n"
     "let LED = 2      // the LED is wired to pin 2\n"
     "let BUTTON = 4   // the button is wired to pin 4\n"
@@ -312,9 +323,9 @@ static const char *STARTER_README =
     "A [JLang](https://github.com/jafarnz/JLang) project.\n"
     "\n"
     "```bash\n"
-    "jlang run main.jl --emit button   # run on the simulated board\n"
-    "jlang check main.jl               # check for errors\n"
-    "jlang xray main.jl                # watch the virtual machine work\n"
+    "jlang run main.jlang --emit button   # run on the simulated board\n"
+    "jlang check main.jlang               # check for errors\n"
+    "jlang xray main.jlang                # watch the virtual machine work\n"
     "```\n";
 
 static const char *STARTER_AGENTS =
@@ -322,8 +333,8 @@ static const char *STARTER_AGENTS =
     "\n"
     "This project is written in JLang, a small language for microcontrollers.\n"
     "\n"
-    "- Check code with `jlang check main.jl` (exit 0 = ok, 65 = compile error).\n"
-    "- Run with `jlang run main.jl`; add `--emit <event>` to fire `on <event>` handlers.\n"
+    "- Check code with `jlang check main.jlang` (exit 0 = ok, 65 = compile error).\n"
+    "- Run with `jlang run main.jlang`; add `--emit <event>` to fire `on <event>` handlers.\n"
     "- Full reference: https://github.com/jafarnz/JLang/blob/main/docs/llms.txt\n"
     "\n"
     "Key rules:\n"
@@ -354,7 +365,7 @@ static int new_project(const char *name) {
     }
     char path[1024], readme[1024];
     snprintf(readme, sizeof readme, STARTER_README, name);
-    snprintf(path, sizeof path, "%s/main.jl", name);
+    snprintf(path, sizeof path, "%s/main.jlang", name);
     bool ok = write_text(path, STARTER_MAIN);
     snprintf(path, sizeof path, "%s/README.md", name);
     ok = ok && write_text(path, readme);
@@ -364,8 +375,8 @@ static int new_project(const char *name) {
         fprintf(stderr, "jlang: couldn't write the project files\n");
         return EXIT_USAGE;
     }
-    printf("created %s/\n  main.jl     your program\n  README.md\n  AGENTS.md   "
-           "instructions for AI coding agents\n\nnext:\n  cd %s\n  jlang run main.jl "
+    printf("created %s/\n  main.jlang     your program\n  README.md\n  AGENTS.md   "
+           "instructions for AI coding agents\n\nnext:\n  cd %s\n  jlang run main.jlang "
            "--emit button\n", name, name);
     return 0;
 }
@@ -398,7 +409,7 @@ int main(int argc, char **argv) {
         return EXIT_USAGE;
     }
     if (o.file == NULL) {
-        fprintf(stderr, "usage: jlang %s <file.jl>\n", cmd);
+        fprintf(stderr, "usage: jlang %s <file.jlang>\n", cmd);
         return EXIT_USAGE;
     }
     if (strcmp(cmd, "run") == 0) return run_file(&o, false);

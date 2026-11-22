@@ -38,12 +38,14 @@ void board_sim_default_options(BoardSimOptions *o) {
 
 static void advance_time(uint32_t ms) {
     sim.now_ms += ms;
+#ifndef JL_NO_REALTIME
     if (sim.opt.realtime && ms > 0) {
         struct timespec ts;
         ts.tv_sec = (time_t)(ms / 1000);
         ts.tv_nsec = (long)(ms % 1000) * 1000000L;
         nanosleep(&ts, NULL);
     }
+#endif
 }
 
 static bool get_pin(JlVM *vm, const char *fn, Value v, int32_t *pin) {

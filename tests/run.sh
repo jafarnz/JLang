@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs every tests/*.jl and compares the output with its "// expect:" lines.
+# Runs every tests/*.jlang and compares the output with its "// expect:" lines.
 #
 # Directives inside a test file:
 #   // expect: <line>     one expected line of output (stdout + stderr)
@@ -10,7 +10,7 @@ BIN="${1:-build/jlang}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 pass=0
 fail=0
-for t in "$DIR"/*.jl; do
+for t in "$DIR"/*.jlang; do
     name="$(basename "$t")"
     expected="$(sed -n 's|^.*// expect: \{0,1\}||p' "$t")"
     args="$(sed -n 's|^// args: ||p' "$t")"

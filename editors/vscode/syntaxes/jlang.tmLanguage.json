@@ -1,0 +1,80 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "JLang",
+  "scopeName": "source.jlang",
+  "fileTypes": ["jlang"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#builtins" },
+    { "include": "#calls" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.jlang", "match": "//.*$" },
+        { "name": "comment.block.jlang", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.jlang",
+          "begin": "\"", "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.jlang", "match": "\\\\(x[0-9A-Fa-f]{2}|[ntr0\\\\\"'])" },
+            { "name": "constant.other.placeholder.jlang", "match": "\\{[dxbc]?[0-9]*\\}" }
+          ]
+        },
+        { "name": "string.quoted.single.jlang", "match": "'(\\\\(x[0-9A-Fa-f]{2}|[ntr0\\\\\"'])|[^'\\\\])'" }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.jlang", "match": "\\b0[xX][0-9A-Fa-f_]+\\b" },
+        { "name": "constant.numeric.binary.jlang", "match": "\\b0[bB][01_]+\\b" },
+        { "name": "constant.numeric.decimal.jlang", "match": "\\b[0-9][0-9_]*\\b" }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": { "1": { "name": "storage.type.function.jlang" }, "2": { "name": "entity.name.function.jlang" } }
+        },
+        {
+          "match": "\\b(on)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": { "1": { "name": "keyword.control.event.jlang" }, "2": { "name": "entity.name.event.jlang" } }
+        },
+        {
+          "match": "\\b(let)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": { "1": { "name": "storage.type.jlang" }, "2": { "name": "variable.other.jlang" } }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.jlang", "match": "\\b(if|else|while|for|in|return|break|continue)\\b" },
+        { "name": "constant.language.jlang", "match": "\\b(true|false|nil)\\b" }
+      ]
+    },
+    "builtins": {
+      "name": "support.function.builtin.jlang",
+      "match": "\\b(print|printf|alloc|free|len|read16|read32|write16|write32|mem|memmap|u8|i8|u16|i16|assert|cycles|emit|pin_mode|pin_write|pin_read|delay|millis|capture|ask|speak)\\b(?=\\s*\\()"
+    },
+    "calls": {
+      "name": "entity.name.function.call.jlang",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*\\()"
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.range.jlang", "match": "\\.\\." },
+        { "name": "keyword.operator.jlang", "match": "<<=|>>=|<<|>>|&&|\\|\\||==|!=|<=|>=|[-+*/%&|^~!<>]=?|=" }
+      ]
+    }
+  }
+}

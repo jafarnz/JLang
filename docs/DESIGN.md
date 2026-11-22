@@ -18,7 +18,7 @@ CONST 2 · CONST 3 · ADD · DEF_GLOBAL x
 globals: x = 5
 ```
 
-Try it yourself: `jlang dis file.jl` prints the bytecode and `jlang xray file.jl`
+Try it yourself: `jlang dis file.jlang` prints the bytecode and `jlang xray file.jlang`
 runs it one instruction at a time, showing the stack.
 
 ## 2. Values (`value.h`)

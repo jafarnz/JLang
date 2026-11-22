@@ -7,15 +7,15 @@
 Write code on your laptop against a simulated board, see exactly what the
 machine does with it, then run the same script on a real microcontroller.
 
-```jl
+```jlang
 let config = 0
 config[7] = 1            // turn the sensor on
 config[6..4] = 0b101     // sample rate 5
 printf("CONFIG = {b8}\n", config)     // CONFIG = 0b11010000
 ```
 
-[Quick start](#quick-start) · [Why JLang](#why-jlang) · [Language tour](#language-tour) ·
-[Docs](docs/LANGUAGE.md) · [Embedding](docs/EMBEDDING.md) · [For AI agents](docs/llms.txt)
+**[Try it in your browser](https://jafarniaz.com/jlang/playground)** · [Docs](https://jafarniaz.com/jlang/docs) ·
+[Quick start](#quick-start) · [Language tour](#language-tour) · [For AI agents](https://jafarniaz.com/jlang/llms.txt)
 
 </div>
 
@@ -38,15 +38,17 @@ every mistake.
 | **Interrupt-style events** | `on button { ... }` runs whenever the host fires `button`. |
 | **Errors that teach** | `300 doesn't fit in a byte (0..255). Hint: use u8(v) or v & 0xFF`, `'prnt' is not defined - did you mean 'print'?` |
 | **Tiny and embeddable** | ~4,000 lines of portable C99 (with comments), no dependencies. One fixed heap, bounded stack, no garbage collector pauses. Built to run inside ESP32 firmware. |
+| **Runs in the browser** | The same C core compiles to a 97 KB WebAssembly module, so the [playground](https://jafarniaz.com/jlang/playground) needs no install. |
+| **Watchdog built in** | `--max-cycles` turns an endless loop into a clear error instead of a frozen device. |
 | **Agent-friendly** | `jlang check` gives precise errors and exit codes, `jlang new` writes an `AGENTS.md`, and [`docs/llms.txt`](docs/llms.txt) is the whole language on one page. |
 
 ## Real use: scripting hardware
 
 JLang is the behaviour layer of real devices. The firmware (C) exposes the
-hardware as built-ins; **what the device does** lives in a `.jl` script:
+hardware as built-ins; **what the device does** lives in a `.jlang` script:
 
-```jl
-// iris.jl - an AI vision assistant for visually impaired commuters
+```jlang
+// iris.jlang - an AI vision assistant for visually impaired commuters
 on bus_button {
     let photo = capture()
     let answer = ask(photo, "Read the number of the bus arriving.")
@@ -61,7 +63,7 @@ on bus_button {
 - **Bounded memory.** The script's heap is fixed, so it can never starve the camera or Wi-Fi.
 - **Test without hardware.** The simulator mocks the camera, AI and speaker, so the logic runs in CI.
 
-See [`examples/iris.jl`](examples/iris.jl).
+See [`examples/iris.jlang`](examples/iris.jlang).
 
 ## Quick start
 
@@ -72,7 +74,7 @@ sudo make install       # optional: puts `jlang` on your PATH
 
 jlang new blinky        # create a starter project
 cd blinky
-jlang run main.jl --emit button
+jlang run main.jlang --emit button
 ```
 
 ```text
@@ -88,7 +90,7 @@ button pressed!
 
 | Command | What it does |
 |---|---|
-| `jlang new <name>` | Create a project with `main.jl`, `README.md` and `AGENTS.md` |
+| `jlang new <name>` | Create a project with `main.jlang`, `README.md` and `AGENTS.md` |
 | `jlang run <file>` | Run on the simulated board |
 | `jlang check <file>` | Compile only, report errors (exit 0 / 65) |
 | `jlang xray <file>` | Run while showing every instruction and the stack |
@@ -96,11 +98,15 @@ button pressed!
 | `jlang repl` | Interactive prompt |
 
 Options for `run` / `xray`: `--emit <event>` (repeatable), `--pin <n>=<0|1>`,
-`--answer <text>`, `--heap <bytes>`, `--realtime`, `--stats`, `--no-leak-check`.
+`--answer <text>`, `--heap <bytes>`, `--max-cycles <n>`, `--realtime`, `--stats`, `--no-leak-check`.
+
+### Editor support
+
+[`editors/vscode`](editors/vscode) adds syntax highlighting for `.jlang` files to VS Code.
 
 ## Language tour
 
-```jl
+```jlang
 // Variables and numbers (32-bit ints, wrap like hardware)
 let year = 2026
 let mask = 0b1111_0000
@@ -140,7 +146,7 @@ The full reference is in [docs/LANGUAGE.md](docs/LANGUAGE.md).
 
 ```
 source ──► lexer ──► one-pass compiler ──► bytecode ──► stack VM ──► host built-ins
- .jl        tokens      (Pratt parser)      chunks       run loop     pins, camera, ...
+ .jlang        tokens      (Pratt parser)      chunks       run loop     pins, camera, ...
 ```
 
 | File | Role |
@@ -152,6 +158,7 @@ source ──► lexer ──► one-pass compiler ──► bytecode ──► 
 | `src/builtins.c` | Core built-ins (`print`, `alloc`, `read32`, ...) |
 | `src/board_sim.c` | Desktop board simulator with virtual time |
 | `src/main.c` | The `jlang` command |
+| `wasm/` | Browser host and JS loader for the playground |
 
 Details in [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -160,6 +167,7 @@ Details in [docs/DESIGN.md](docs/DESIGN.md).
 ```bash
 make test        # run the test suite
 make sanitize    # run the tests under AddressSanitizer + UBSan
+make wasm        # build/jlang.wasm for the browser (needs clang + wasi-libc)
 ```
 
 ## License

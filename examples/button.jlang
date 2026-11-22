@@ -1,6 +1,6 @@
-// button.jl - react to inputs with event handlers (like interrupts).
-// Run: jlang run examples/button.jl --emit press --emit press --emit press
-// Or read a pin:  jlang run examples/button.jl --pin 4=0
+// button.jlang - react to inputs with event handlers (like interrupts).
+// Run: jlang run examples/button.jlang --emit press --emit press --emit press
+// Or read a pin:  jlang run examples/button.jlang --pin 4=0
 
 let LED = 2
 let BUTTON = 4

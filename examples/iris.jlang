@@ -1,4 +1,4 @@
-// iris.jl - behaviour script for Iris, an AI vision assistant for
+// iris.jlang - behaviour script for Iris, an AI vision assistant for
 // visually impaired commuters.
 //
 // On the device, this file lives on the SD card. The firmware (C)
@@ -8,8 +8,8 @@
 // reported as an error; it can't crash the device.
 //
 // Test it on a laptop (camera, AI and speaker are simulated):
-//   jlang run examples/iris.jl --emit bus_button
-//   jlang run examples/iris.jl --emit read_button --answer "Exit B, Bugis MRT"
+//   jlang run examples/iris.jlang --emit bus_button
+//   jlang run examples/iris.jlang --emit read_button --answer "Exit B, Bugis MRT"
 
 let LANG = "en"          // "en", "zh", "ms" or "ta"
 let STATUS_LED = 21

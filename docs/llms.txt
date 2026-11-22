@@ -4,7 +4,7 @@
 
 ## Tooling
 - `jlang check FILE` compile only. Exit 0 = ok, 65 = compile error. Errors: `error (line L, col C): message` + source line + caret.
-- `jlang run FILE [--emit EVENT]... [--pin N=0|1] [--answer TEXT] [--heap BYTES] [--stats]` run on the simulated board. Exit 70 = runtime error: `runtime error (line L): message` + call trace. Unfreed memory is reported at exit as `leak: ...` on stderr.
+- `jlang run FILE [--emit EVENT]... [--pin N=0|1] [--answer TEXT] [--heap BYTES] [--max-cycles N] [--stats]` run on the simulated board. Exit 70 = runtime error: `runtime error (line L): message` + call trace. Unfreed memory is reported at exit as `leak: ...` on stderr.
 - `jlang xray FILE` trace every instruction. `jlang dis FILE` print bytecode. `jlang new NAME` scaffold a project.
 
 ## Syntax
