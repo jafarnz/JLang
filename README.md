@@ -1,175 +1,58 @@
-<div align="center">
-
 # JLang
 
-**A small, open language for software people who want to understand hardware.**
-
-Write code on your laptop against a simulated board, see exactly what the
-machine does with it, then run the same script on a real microcontroller.
+JLang is a small programming language for learning how computers work at the level of bits, bytes and pins, and for writing the behaviour of microcontroller projects.
 
 ```jlang
-let config = 0
-config[7] = 1            // turn the sensor on
-config[6..4] = 0b101     // sample rate 5
-printf("CONFIG = {b8}\n", config)     // CONFIG = 0b11010000
+let status = 0
+status[7] = 1            // set bit 7
+status[3..0] = 0b1010    // set bits 3 down to 0
+printf("{b8} = {x2}\n", status, status)
+
+let buf = alloc(4)
+write32(buf, 0, 123456)
+free(buf)
+print(buf[0])            // reported as a use after free
 ```
 
-**[Try it in your browser](https://jafarniaz.com/jlang/playground)** · [Docs](https://jafarniaz.com/jlang/docs) ·
-[Quick start](#quick-start) · [Language tour](#language-tour) · [For AI agents](https://jafarniaz.com/jlang/llms.txt)
+Integers are 32 bits wide and overflow the way a CPU register does, and individual bits can be read and written with `reg[3]` and `reg[7..4]`. Memory is allocated and freed by hand on a fixed-size heap that reports use-after-free, double frees, out-of-bounds access and leaks, together with the lines where the memory was allocated and freed. Programs that use pins and timers run on a simulated board with virtual time, and the same scripts run on real hardware through a small C API.
 
-</div>
+The documentation is at [jafarniaz.com/jlang](https://jafarniaz.com/jlang), and the [playground](https://jafarniaz.com/jlang/playground) runs JLang in the browser without installing anything.
 
----
+## Installing
 
-## Why JLang
-
-Most languages hide the machine. Python hides memory. JavaScript hides integer
-sizes. C shows you everything but punishes mistakes silently. JLang sits in
-between: it is as low-level as the hardware you are learning, and it explains
-every mistake.
-
-| | What it means for you |
-|---|---|
-| **Bits are first-class** | `reg[3]` reads bit 3 of an int, `reg[7..4] = 5` writes a bit field, the way hardware registers really work. Binary and hex literals, `{b8}` / `{x2}` formatting. |
-| **Real memory, with a safety net** | `alloc()` and `free()` like C, on a fixed-size heap like a microcontroller. Use-after-free, double free, out-of-bounds and leaks are caught and reported with the line that caused them. |
-| **Ints behave like registers** | 32-bit, wrap around on overflow, no hidden floats. `u8()`, `i8()`, `u16()`, `i16()` make widths explicit. |
-| **Board simulator built in** | `pin_mode`, `pin_write`, `pin_read`, `delay`, `millis`, plus camera / AI / speaker built-ins, simulated on your laptop with **virtual time**: `delay(1000)` is instant and every run is reproducible. |
-| **See inside the machine** | `jlang xray` shows each bytecode instruction and the stack as it runs. `jlang dis` prints the compiled bytecode. `--stats` counts instructions like CPU cycles. `memmap()` draws the heap. |
-| **Interrupt-style events** | `on button { ... }` runs whenever the host fires `button`. |
-| **Errors that teach** | `300 doesn't fit in a byte (0..255). Hint: use u8(v) or v & 0xFF`, `'prnt' is not defined - did you mean 'print'?` |
-| **Tiny and embeddable** | ~4,000 lines of portable C99 (with comments), no dependencies. One fixed heap, bounded stack, no garbage collector pauses. Built to run inside ESP32 firmware. |
-| **Runs in the browser** | The same C core compiles to a 97 KB WebAssembly module, so the [playground](https://jafarniaz.com/jlang/playground) needs no install. |
-| **Watchdog built in** | `--max-cycles` turns an endless loop into a clear error instead of a frozen device. |
-| **Agent-friendly** | `jlang check` gives precise errors and exit codes, `jlang new` writes an `AGENTS.md`, and [`docs/llms.txt`](docs/llms.txt) is the whole language on one page. |
-
-## Real use: scripting hardware
-
-JLang is the behaviour layer of real devices. The firmware (C) exposes the
-hardware as built-ins; **what the device does** lives in a `.jlang` script:
-
-```jlang
-// iris.jlang - an AI vision assistant for visually impaired commuters
-on bus_button {
-    let photo = capture()
-    let answer = ask(photo, "Read the number of the bus arriving.")
-    free(photo)
-    speak(answer, "en")
-    free(answer)
-}
-```
-
-- **Change behaviour without reflashing.** Edit the script on the SD card, not the firmware.
-- **A script bug can't crash the device.** Errors are reported; the firmware keeps running.
-- **Bounded memory.** The script's heap is fixed, so it can never starve the camera or Wi-Fi.
-- **Test without hardware.** The simulator mocks the camera, AI and speaker, so the logic runs in CI.
-
-See [`examples/iris.jlang`](examples/iris.jlang).
-
-## Quick start
+JLang needs only a C compiler and `make`.
 
 ```bash
-git clone https://github.com/jafarnz/JLang && cd JLang
-make                    # builds ./build/jlang (needs only a C compiler)
-sudo make install       # optional: puts `jlang` on your PATH
+git clone https://github.com/jafarnz/JLang
+cd JLang
+make
+sudo make install
+```
 
-jlang new blinky        # create a starter project
+Then create a project and run it on the simulated board:
+
+```bash
+jlang new blinky
 cd blinky
 jlang run main.jlang --emit button
 ```
 
-```text
-[sim      0ms] pin 2 -> HIGH
-[sim    250ms] pin 2 -> LOW
-...
-blinked 3 times in 1500 ms
-status = 0b10100001 (0xA1)
-button pressed!
-```
+`jlang check` compiles a file without running it, `jlang xray` runs it while printing each bytecode instruction and the value stack, `jlang dis` prints the bytecode, and `jlang repl` starts an interactive prompt. `jlang help` lists every option.
 
-### Commands
+## Using JLang in firmware
 
-| Command | What it does |
-|---|---|
-| `jlang new <name>` | Create a project with `main.jlang`, `README.md` and `AGENTS.md` |
-| `jlang run <file>` | Run on the simulated board |
-| `jlang check <file>` | Compile only, report errors (exit 0 / 65) |
-| `jlang xray <file>` | Run while showing every instruction and the stack |
-| `jlang dis <file>` | Print the bytecode |
-| `jlang repl` | Interactive prompt |
+The core is portable C99 with no operating system calls, so it can be built into microcontroller firmware. The firmware registers its hardware as built-in functions and fires events when buttons are pressed, while a JLang script decides what the device does. [Iris](examples/iris.jlang), a wearable camera that tells visually impaired commuters which bus is arriving, uses JLang in this way. The [embedding guide](https://jafarniaz.com/jlang/docs/guides/embedding) describes the API.
 
-Options for `run` / `xray`: `--emit <event>` (repeatable), `--pin <n>=<0|1>`,
-`--answer <text>`, `--heap <bytes>`, `--max-cycles <n>`, `--realtime`, `--stats`, `--no-leak-check`.
+## Repository layout
 
-### Editor support
-
-[`editors/vscode`](editors/vscode) adds syntax highlighting for `.jlang` files to VS Code.
-
-## Language tour
-
-```jlang
-// Variables and numbers (32-bit ints, wrap like hardware)
-let year = 2026
-let mask = 0b1111_0000
-let big = 0xFFFF_FFFF            // = -1 as a signed 32-bit int
-
-// Functions, loops, conditions (no semicolons, no parentheses needed)
-fn clamp(v, lo, hi) {
-    if v < lo { return lo } else if v > hi { return hi }
-    return v
-}
-for i in 0..10 { if i % 2 == 0 { continue } print(i) }
-while pin_read(4) == 1 { delay(10) }
-
-// Bits
-let r = 0
-r[0] = 1                          // set bit 0
-r[7..4] = 0b1010                  // write bits 7..4
-print(r[7..4])                    // 10
-
-// Memory you manage yourself
-let buf = alloc(16)               // 16 zeroed bytes on the JLang heap
-buf[0] = 0xAA
-write32(buf, 4, 123456)           // little-endian, like the ESP32
-print(read32(buf, 4))
-free(buf)
-
-// Formatted output
-printf("{} = {x4} = {b16}\n", 42, 42, 42)
-
-// Events
-on timer { print("tick") }
-```
-
-The full reference is in [docs/LANGUAGE.md](docs/LANGUAGE.md).
-
-## How it works
-
-```
-source ──► lexer ──► one-pass compiler ──► bytecode ──► stack VM ──► host built-ins
- .jlang        tokens      (Pratt parser)      chunks       run loop     pins, camera, ...
-```
-
-| File | Role |
-|---|---|
-| `src/lexer.c` | Source text → tokens |
-| `src/compiler.c` | Tokens → bytecode in a single pass, no syntax tree |
-| `src/vm.c` | Fetch-decode-execute loop over a value stack |
-| `src/heap.c` | First-fit allocator with splitting, coalescing and generation-checked handles |
-| `src/builtins.c` | Core built-ins (`print`, `alloc`, `read32`, ...) |
-| `src/board_sim.c` | Desktop board simulator with virtual time |
-| `src/main.c` | The `jlang` command |
-| `wasm/` | Browser host and JS loader for the playground |
-
-Details in [docs/DESIGN.md](docs/DESIGN.md).
-
-## Development
+`src/` contains the lexer, the one-pass compiler, the bytecode virtual machine, the heap allocator, the built-in functions, the board simulator and the `jlang` command. `wasm/` contains the WebAssembly build used by the playground, `editors/vscode/` contains syntax highlighting for VS Code, `examples/` contains example programs and `tests/` contains the test suite. [docs/DESIGN.md](docs/DESIGN.md) explains the implementation file by file.
 
 ```bash
-make test        # run the test suite
-make sanitize    # run the tests under AddressSanitizer + UBSan
-make wasm        # build/jlang.wasm for the browser (needs clang + wasi-libc)
+make test        # run the tests
+make sanitize    # run the tests with AddressSanitizer and UBSan
+make wasm        # build build/jlang.wasm (needs clang and wasi-libc)
 ```
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+JLang is released under the MIT license.
