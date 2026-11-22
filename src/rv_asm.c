@@ -783,9 +783,9 @@ static void process_line(Asm *a, char *line) {
         }
         if (a->want_listing) {
             char buf[256];
-            int len = snprintf(buf, sizeof buf, "%08x  ", start_addr);
+            int len = snprintf(buf, sizeof buf, "%08x  ", (unsigned)start_addr);
             for (int i = 0; i < 2; i++) {
-                if (i < a->line_nwords) len += snprintf(buf + len, sizeof buf - (size_t)len, "%08x ", a->line_words[i]);
+                if (i < a->line_nwords) len += snprintf(buf + len, sizeof buf - (size_t)len, "%08x ", (unsigned)(a->line_words[i]));
                 else len += snprintf(buf + len, sizeof buf - (size_t)len, "         ");
             }
             len += snprintf(buf + len, sizeof buf - (size_t)len, " %s %s\n", mnemonic, rest_copy);
@@ -845,7 +845,7 @@ bool rv_assemble(const char *src, RvImage *out, bool want_listing, bool allow_un
         out->size = a.base[SEC_BSS] + a.off[SEC_BSS];
         out->text_size = a.off[SEC_TEXT];
         if (out->size > RV_RAM_SIZE - 64 * 1024) {
-            snprintf(out->error, sizeof out->error, "program is too big (%u bytes)", out->size);
+            snprintf(out->error, sizeof out->error, "program is too big (%u bytes)", (unsigned)out->size);
             a.failed = true;
         }
     }

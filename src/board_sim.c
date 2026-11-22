@@ -53,7 +53,7 @@ static bool get_pin(JlVM *vm, const char *fn, Value v, int32_t *pin) {
     if (!jl_get_int(vm, fn, 1, v, pin)) return false;
     if (*pin < 0 || *pin >= SIM_PINS) {
         return jl_error(vm, "%s(): pin %d doesn't exist (this board has pins 0..%d)",
-                        fn, *pin, SIM_PINS - 1);
+                        fn, (int)(*pin), SIM_PINS - 1);
     }
     return true;
 }
@@ -82,7 +82,7 @@ static bool sim_pin_write(JlVM *vm, int argc, Value *args, Value *out) {
     if (!get_pin(vm, "pin_write", args[0], &pin)) return false;
     if (sim.mode[pin] != MODE_OUT) {
         return jl_error(vm, "pin_write(): pin %d is not an output. Call "
-                            "pin_mode(%d, \"out\") first", pin, pin);
+                            "pin_mode(%d, \"out\") first", (int)pin, (int)pin);
     }
     int level;
     if (args[1].type == VAL_BOOL) level = args[1].as.b;
@@ -91,7 +91,7 @@ static bool sim_pin_write(JlVM *vm, int argc, Value *args, Value *out) {
 
     if (sim.level[pin] != level) {
         sim.level[pin] = level;
-        jl_outf(vm, "[sim %6ums] pin %d -> %s\n", sim.now_ms, pin, level ? "HIGH" : "LOW");
+        jl_outf(vm, "[sim %6ums] pin %d -> %s\n", (unsigned)sim.now_ms, (int)pin, level ? "HIGH" : "LOW");
     }
     return true;
 }
@@ -102,7 +102,7 @@ static bool sim_pin_read(JlVM *vm, int argc, Value *args, Value *out) {
     if (!get_pin(vm, "pin_read", args[0], &pin)) return false;
     if (sim.mode[pin] != MODE_IN && sim.mode[pin] != MODE_IN_PULLUP) {
         return jl_error(vm, "pin_read(): pin %d is not an input. Call "
-                            "pin_mode(%d, \"in\") first", pin, pin);
+                            "pin_mode(%d, \"in\") first", (int)pin, (int)pin);
     }
     int v = sim.opt.pin_inputs[pin];
     if (v < 0) v = sim.mode[pin] == MODE_IN_PULLUP ? 1 : 0; /* pull-up reads HIGH */
@@ -115,7 +115,7 @@ static bool sim_delay(JlVM *vm, int argc, Value *args, Value *out) {
     (void)out;
     int32_t ms;
     if (!jl_get_int(vm, "delay", 1, args[0], &ms)) return false;
-    if (ms < 0) return jl_error(vm, "delay(): can't wait a negative time (%d ms)", ms);
+    if (ms < 0) return jl_error(vm, "delay(): can't wait a negative time (%d ms)", (int)ms);
     advance_time((uint32_t)ms);
     return true;
 }
@@ -144,7 +144,7 @@ static bool sim_capture(JlVM *vm, int argc, Value *args, Value *out) {
     uint8_t *data;
     if (!jl_new_buf(vm, (uint32_t)sizeof fake_jpeg, out, &data)) return false;
     memcpy(data, fake_jpeg, sizeof fake_jpeg);
-    jl_outf(vm, "[sim %6ums] camera: photo #%d captured (%u bytes)\n", sim.now_ms,
+    jl_outf(vm, "[sim %6ums] camera: photo #%d captured (%u bytes)\n", (unsigned)sim.now_ms,
             sim.photos, (unsigned)sizeof fake_jpeg);
     return true;
 }
@@ -161,11 +161,11 @@ static bool sim_ask(JlVM *vm, int argc, Value *args, Value *out) {
     if (args[1].type != VAL_STR || !jl_get_string(vm, args[1], &prompt, &n)) {
         return jl_error(vm, "ask(): argument 2 must be the question string");
     }
-    jl_outf(vm, "[sim %6ums] AI: sending photo + \"%.*s\"\n", sim.now_ms, (int)n, prompt);
+    jl_outf(vm, "[sim %6ums] AI: sending photo + \"%.*s\"\n", (unsigned)sim.now_ms, (int)n, prompt);
     advance_time(ASK_MS);
     const char *a = sim.opt.ai_answer;
     if (!jl_new_string(vm, a, (uint32_t)strlen(a), out)) return false;
-    jl_outf(vm, "[sim %6ums] AI: answered\n", sim.now_ms);
+    jl_outf(vm, "[sim %6ums] AI: answered\n", (unsigned)sim.now_ms);
     return true;
 }
 
@@ -181,7 +181,7 @@ static bool sim_speak(JlVM *vm, int argc, Value *args, Value *out) {
     if (argc == 2 && (args[1].type != VAL_STR || !jl_get_string(vm, args[1], &lang, &ln))) {
         return jl_error(vm, "speak(): argument 2 must be a language code like \"en\" or \"zh\"");
     }
-    jl_outf(vm, "[sim %6ums] speaker (%.*s): \"%.*s\"\n", sim.now_ms, (int)ln, lang,
+    jl_outf(vm, "[sim %6ums] speaker (%.*s): \"%.*s\"\n", (unsigned)sim.now_ms, (int)ln, lang,
             (int)n, text);
     advance_time(60u * n); /* about 60 ms per character of speech */
     return true;
@@ -230,7 +230,7 @@ static bool mmio_read(JlVM *vm, uint32_t addr, uint32_t *v) {
     case RV_TIMER_MS: *v = sim.now_ms; return true;
     case RV_UART_TX: case RV_TIMER_WAIT: *v = 0; return true;
     }
-    return jl_error(vm, "mmio_read32(): 0x%08X is not a register of the simulated board", addr);
+    return jl_error(vm, "mmio_read32(): 0x%08X is not a register of the simulated board", (unsigned)addr);
 }
 
 static bool mmio_write(JlVM *vm, uint32_t addr, uint32_t v) {
@@ -256,15 +256,15 @@ static bool mmio_write(JlVM *vm, uint32_t addr, uint32_t v) {
         for (int pin = 0; pin < 32; pin++) {
             int level = (v >> pin) & 1u;
             if (sim.mode[pin] == MODE_OUT && sim.level[pin] != level) {
-                jl_outf(vm, "[sim %6ums] pin %d -> %s\n", sim.now_ms, pin, level ? "HIGH" : "LOW");
+                jl_outf(vm, "[sim %6ums] pin %d -> %s\n", (unsigned)sim.now_ms, pin, level ? "HIGH" : "LOW");
             }
             sim.level[pin] = level;
         }
         return true;
     case RV_TIMER_WAIT: advance_time(v); return true;
-    case RV_EXIT: return jl_error(vm, "the program wrote %u to the exit register", v);
+    case RV_EXIT: return jl_error(vm, "the program wrote %u to the exit register", (unsigned)v);
     }
-    return jl_error(vm, "mmio_write32(): 0x%08X is not a register of the simulated board", addr);
+    return jl_error(vm, "mmio_write32(): 0x%08X is not a register of the simulated board", (unsigned)addr);
 }
 
 static bool sim_mmio_read32(JlVM *vm, int argc, Value *args, Value *out) {

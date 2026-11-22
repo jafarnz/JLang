@@ -1,3 +1,7 @@
 build/
 *.o
 .DS_Store
+boards/*/build/
+boards/*/sdkconfig
+boards/*/sdkconfig.old
+boards/*/managed_components/

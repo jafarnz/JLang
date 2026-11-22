@@ -1,0 +1,23 @@
+// Compiled to RISC-V machine code when you run idf.py build.
+//
+// Pin numbers are GPIO numbers. On a XIAO ESP32-C6 the orange user LED is
+// GPIO 15 and lights when the pin is 0. On other boards, change LED.
+let LED = 15
+pin_mode(LED, "out")
+
+for i in 0..3 {
+    pin_write(LED, 0)
+    delay(200)
+    pin_write(LED, 1)
+    delay(200)
+}
+
+// Called each time the BOOT button is pressed.
+let presses = 0
+on button {
+    presses += 1
+    pin_write(LED, presses % 2)
+    printf("button pressed {} times\n", presses)
+}
+
+print("JLang is running as RISC-V machine code. Press the BOOT button.")

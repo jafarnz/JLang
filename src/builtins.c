@@ -81,7 +81,7 @@ static bool format_one(JlVM *vm, const char *spec, uint32_t n, Value v) {
     }
     case 'c':
         if (v.as.i < 0 || v.as.i > 255) {
-            return jl_error(vm, "printf(): {c} needs a byte (0..255), got %d", v.as.i);
+            return jl_error(vm, "printf(): {c} needs a byte (0..255), got %d", (int)v.as.i);
         }
         buf[len++] = (char)v.as.i;
         break;
@@ -140,7 +140,7 @@ static bool bi_alloc(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
     int32_t n;
     if (!jl_get_int(vm, "alloc", 1, args[0], &n)) return false;
-    if (n <= 0) return jl_error(vm, "alloc(): size must be at least 1 byte, got %d", n);
+    if (n <= 0) return jl_error(vm, "alloc(): size must be at least 1 byte, got %d", (int)n);
 
     HeapRef ref;
     HeapStatus st = heap_alloc(&vm->heap, (uint32_t)n, BLOCK_BUF,
@@ -155,10 +155,10 @@ static bool bi_alloc(JlVM *vm, int argc, Value *args, Value *out) {
         if (free_bytes >= (uint32_t)n) {
             return jl_error(vm, "out of memory: alloc(%d) failed. %u bytes are free in "
                                 "total, but the largest free block is only %u bytes. "
-                                "The heap is fragmented", n, free_bytes, largest);
+                                "The heap is fragmented", (int)n, (unsigned)free_bytes, (unsigned)largest);
         }
         return jl_error(vm, "out of memory: alloc(%d) failed, only %u bytes are free",
-                        n, free_bytes);
+                        (int)n, (unsigned)free_bytes);
     }
     *out = buf_val(ref);
     return true;
@@ -181,7 +181,7 @@ static bool bi_free(JlVM *vm, int argc, Value *args, Value *out) {
     if (e != NULL && !e->live) {
         return jl_error(vm, "double free: this %s was already freed at line %u "
                             "(it was allocated at line %u)",
-                        value_type_name(v), e->free_line, e->alloc_line);
+                        value_type_name(v), (unsigned)e->free_line, (unsigned)e->alloc_line);
     }
     return jl_error(vm, "double free: this %s was already freed", value_type_name(v));
 }
@@ -217,7 +217,7 @@ static bool span(JlVM *vm, const char *fn, Value b, Value off, uint32_t size,
     if (!jl_get_int(vm, fn, 2, off, &o)) return false;
     if (o < 0 || (uint32_t)o + size > len) {
         return jl_error(vm, "%s(): bytes %d..%d are outside this buf (it has %u bytes)",
-                        fn, o, o + (int32_t)size - 1, len);
+                        fn, (int)o, (int)(o + (int32_t)size - 1), (unsigned)len);
     }
     *p = data + o;
     return true;
@@ -271,14 +271,14 @@ static bool bi_mem(JlVM *vm, int argc, Value *args, Value *out) {
     (void)out;
     Heap *h = &vm->heap;
     uint32_t free_bytes = heap_free_bytes(h);
-    jl_outf(vm, "heap: %u bytes\n", h->cap);
-    jl_outf(vm, "  in use   : %u bytes in %u block(s)\n", h->used_bytes, h->live_blocks);
-    jl_outf(vm, "  free     : %u bytes (largest free block: %u bytes)\n", free_bytes,
-            heap_largest_free(h));
+    jl_outf(vm, "heap: %u bytes\n", (unsigned)h->cap);
+    jl_outf(vm, "  in use   : %u bytes in %u block(s)\n", (unsigned)h->used_bytes, (unsigned)h->live_blocks);
+    jl_outf(vm, "  free     : %u bytes (largest free block: %u bytes)\n", (unsigned)free_bytes,
+            (unsigned)(heap_largest_free(h)));
     jl_outf(vm, "  overhead : %u bytes (block headers + alignment)\n",
-            h->cap - free_bytes - h->used_bytes);
-    jl_outf(vm, "  peak use : %u bytes, allocs: %u, frees: %u\n", h->peak_bytes,
-            h->total_allocs, h->total_frees);
+            (unsigned)(h->cap - free_bytes - h->used_bytes));
+    jl_outf(vm, "  peak use : %u bytes, allocs: %u, frees: %u\n", (unsigned)h->peak_bytes,
+            (unsigned)h->total_allocs, (unsigned)h->total_frees);
     return true;
 }
 
@@ -304,14 +304,14 @@ static bool bi_memmap(JlVM *vm, int argc, Value *args, Value *out) {
             continue;
         }
         if (in_free) {
-            jl_outf(vm, "0x%04X %6u   free\n", free_start, free_size);
+            jl_outf(vm, "0x%04X %6u   free\n", (unsigned)free_start, (unsigned)free_size);
             in_free = false;
         }
         jl_outf(vm, "0x%04X %6u   %s #%u, %u bytes used, allocated at line %u\n",
-                bi.off, bi.size, bi.kind == BLOCK_STR ? "str" : "buf",
-                (unsigned)bi.handle, bi.len, h->handles[bi.handle].alloc_line);
+                (unsigned)bi.off, (unsigned)bi.size, bi.kind == BLOCK_STR ? "str" : "buf",
+                (unsigned)bi.handle, (unsigned)bi.len, (unsigned)(h->handles[bi.handle].alloc_line));
     }
-    if (in_free) jl_outf(vm, "0x%04X %6u   free\n", free_start, free_size);
+    if (in_free) jl_outf(vm, "0x%04X %6u   free\n", (unsigned)free_start, (unsigned)free_size);
     return true;
 }
 

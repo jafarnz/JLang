@@ -1,0 +1,24 @@
+// The script the firmware runs. Edit it, then run idf.py build flash monitor.
+//
+// Pin numbers are GPIO numbers. On a XIAO ESP32-S3 the orange user LED is
+// GPIO 21 and lights when the pin is 0. On other boards, change LED.
+let LED = 21
+pin_mode(LED, "out")
+
+// Blink three times so you can see the board is alive.
+for i in 0..3 {
+    pin_write(LED, 0)
+    delay(200)
+    pin_write(LED, 1)
+    delay(200)
+}
+
+// The firmware fires this event when the BOOT button is pressed.
+let presses = 0
+on button {
+    presses += 1
+    pin_write(LED, presses % 2)
+    printf("button pressed {} times\n", presses)
+}
+
+print("JLang is running. Press the BOOT button.")

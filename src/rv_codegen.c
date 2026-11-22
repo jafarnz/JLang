@@ -967,7 +967,7 @@ static const char *SIM_HAL =
     "jl_hal_millis:\n    li t0, 0x10002000\n    lw a0, 0(t0)\n    ret\n";
 
 static void emit_string(Gen *g, const char *label, const char *s, uint32_t n) {
-    out(g, "    .align 2\n%s:\n    .word %u\n", label, n);
+    out(g, "    .align 2\n%s:\n    .word %u\n", label, (unsigned)n);
     for (uint32_t i = 0; i < n; i += 16) {
         out(g, "    .byte ");
         for (uint32_t j = i; j < n && j < i + 16; j++) out(g, "%s%u", j > i ? ", " : "", (unsigned)(uint8_t)s[j]);

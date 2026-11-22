@@ -33,8 +33,8 @@ static void fault(Cpu *c, const char *fmt, uint32_t value) {
     char msg[200], buf[320];
     snprintf(msg, sizeof msg, fmt, value);
     int line = rv_line_for(c->img, c->pc);
-    int n = line > 0 ? snprintf(buf, sizeof buf, "runtime error (line %d): %s\n  at pc 0x%08x\n", line, msg, c->pc)
-                     : snprintf(buf, sizeof buf, "runtime error: %s\n  at pc 0x%08x\n", msg, c->pc);
+    int n = line > 0 ? snprintf(buf, sizeof buf, "runtime error (line %d): %s\n  at pc 0x%08x\n", line, msg, (unsigned)c->pc)
+                     : snprintf(buf, sizeof buf, "runtime error: %s\n  at pc 0x%08x\n", msg, (unsigned)c->pc);
     if (c->opt->err) c->opt->err(c->opt->ud, buf, (size_t)n);
     c->halted = true;
     c->exit_code = 70;
@@ -83,7 +83,7 @@ static bool mmio_write(Cpu *c, uint32_t addr, uint32_t v) {
         for (int pin = 0; pin < 32; pin++) {
             if (!(changed & (1u << pin))) continue;
             char buf[64];
-            int n = snprintf(buf, sizeof buf, "[sim %6ums] pin %d -> %s\n", c->now_ms, pin,
+            int n = snprintf(buf, sizeof buf, "[sim %6ums] pin %d -> %s\n", (unsigned)c->now_ms, pin,
                              (v >> pin) & 1u ? "HIGH" : "LOW");
             write_out(c, buf, (size_t)n);
         }

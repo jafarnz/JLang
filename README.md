@@ -49,7 +49,7 @@ The assembler, emulator and code generator are part of JLang and need nothing el
 
 There are two ways to run JLang on a microcontroller, and [boards/](boards) has working setups for both.
 
-Native code from `jlang build` runs on any RISC-V microcontroller, such as the ESP32-C3 or Raspberry Pi Pico 2. A board provides seven small C functions for printing, pins and time, described in [boards/jl_hal.h](boards/jl_hal.h).
+Native code from `jlang build` runs on any RISC-V microcontroller, such as the ESP32-C3, ESP32-C6 or Raspberry Pi Pico 2. A board provides seven small C functions for printing, pins and time, described in [boards/jl_hal.h](boards/jl_hal.h).
 
 The bytecode VM runs the full language inside the firmware of any 32-bit microcontroller with about 64 KB of RAM, including Xtensa chips such as the ESP32-S3. The firmware registers its hardware as built-in functions and fires events when buttons are pressed, while a JLang script decides what the device does. [Iris](examples/iris.jlang), a wearable camera that tells visually impaired commuters which bus is arriving, uses JLang in this way. The [embedding guide](https://jafarniaz.com/jlang/docs/guides/embedding) describes the API.
 

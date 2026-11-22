@@ -1,0 +1,10 @@
+# XIAO and most newer ESP32 boards talk to the computer through the chip's
+# own USB port, so print there.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# The compiler and VM need more stack than the 3.5 KB default.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# A script that loops without delay() shouldn't trigger watchdog warnings.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n

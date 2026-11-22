@@ -306,7 +306,7 @@ static int native(const Options *o, bool emulate) {
             fflush(stdout);
             if (o->stats) {
                 fprintf(stderr, "--- stats ---\nRISC-V instructions executed: %llu\ncode size: %u bytes\n",
-                        (unsigned long long)cycles, img.text_size);
+                        (unsigned long long)cycles, (unsigned)img.text_size);
             }
         }
     } else {
@@ -327,7 +327,7 @@ static int native(const Options *o, bool emulate) {
             fputs(assembly, f);
             fclose(f);
             if (!o->listing) {
-                printf("wrote %s (%u bytes of RV32IM code)\n", path, img.text_size);
+                printf("wrote %s (%u bytes of RV32IM code)\n", path, (unsigned)img.text_size);
             }
         }
     }

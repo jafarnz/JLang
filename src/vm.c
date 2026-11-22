@@ -185,7 +185,7 @@ bool vm_freed_error(JlVM *vm, HeapRef ref, const char *what) {
     if (e != NULL && !e->live) {
         return jl_error(vm, "use after free: this %s was freed at line %u "
                             "(it was allocated at line %u)",
-                        what, e->free_line, e->alloc_line);
+                        what, (unsigned)e->free_line, (unsigned)e->alloc_line);
     }
     return jl_error(vm, "use after free: this %s was freed earlier and its "
                         "memory has been reused", what);
@@ -256,7 +256,7 @@ static bool new_block(JlVM *vm, uint32_t len, uint8_t kind, HeapRef *ref, uint8_
     }
     if (st != HEAP_OK) {
         return jl_error(vm, "out of memory: needed %u bytes, but the largest free block "
-                            "is %u bytes", len, heap_largest_free(&vm->heap));
+                            "is %u bytes", (unsigned)len, (unsigned)(heap_largest_free(&vm->heap)));
     }
     uint32_t n;
     heap_get(&vm->heap, *ref, data, &n);
@@ -398,9 +398,9 @@ static bool check_index(JlVM *vm, Value idx, uint32_t len, const char *what, int
     }
     int32_t i = idx.as.i;
     if (i < 0 || (uint32_t)i >= len) {
-        if (len == 0) return jl_error(vm, "index %d is out of bounds: this %s is empty", i, what);
+        if (len == 0) return jl_error(vm, "index %d is out of bounds: this %s is empty", (int)i, what);
         return jl_error(vm, "index %d is out of bounds: this %s has %u bytes, so valid "
-                            "indexes are 0..%u", i, what, len, len - 1);
+                            "indexes are 0..%u", (int)i, what, (unsigned)len, (unsigned)(len - 1));
     }
     *out = i;
     return true;
@@ -424,7 +424,7 @@ static bool store_byte(JlVM *vm, Value target, Value idx, Value v) {
     }
     if (v.as.i < 0 || v.as.i > 255) {
         return jl_error(vm, "%d doesn't fit in a byte (0..255). Hint: use u8(v) or "
-                            "v & 0xFF to keep only the low 8 bits", v.as.i);
+                            "v & 0xFF to keep only the low 8 bits", (int)v.as.i);
     }
     data[i] = (uint8_t)v.as.i;
     return true;
@@ -435,7 +435,7 @@ static bool check_bit(JlVM *vm, Value idx, int32_t *out) {
         return jl_error(vm, "a bit number must be an int, got %s", value_type_name(idx));
     }
     if (idx.as.i < 0 || idx.as.i > 31) {
-        return jl_error(vm, "bit %d doesn't exist: an int has bits 0..31", idx.as.i);
+        return jl_error(vm, "bit %d doesn't exist: an int has bits 0..31", (int)idx.as.i);
     }
     *out = idx.as.i;
     return true;
@@ -453,10 +453,10 @@ static bool check_range(JlVM *vm, Value target, Value hi, Value lo,
     *h = hi.as.i;
     *l = lo.as.i;
     if (*l < 0 || *h > 31 || *l > 31 || *h < 0) {
-        return jl_error(vm, "bit range %d..%d is outside 0..31", *h, *l);
+        return jl_error(vm, "bit range %d..%d is outside 0..31", (int)(*h), (int)(*l));
     }
     if (*h < *l) {
-        return jl_error(vm, "write bit ranges high..low, like x[7..4] (got %d..%d)", *h, *l);
+        return jl_error(vm, "write bit ranges high..low, like x[7..4] (got %d..%d)", (int)(*h), (int)(*l));
     }
     int width = *h - *l + 1;
     *mask = width == 32 ? 0xFFFFFFFFu : ((1u << width) - 1u);
@@ -682,7 +682,7 @@ static JlResult run(JlVM *vm, int base) {
         case OP_SHR: {
             INT_OPERANDS(op);
             if (b < 0 || b > 31) {
-                jl_error(vm, "shift amount %d is out of range (it must be 0..31)", b);
+                jl_error(vm, "shift amount %d is out of range (it must be 0..31)", (int)b);
                 goto error;
             }
             int32_t r;
@@ -807,8 +807,8 @@ static JlResult run(JlVM *vm, int base) {
             }
             int width = h - l + 1;
             if (width < 32 && (v.as.i < 0 || (uint32_t)v.as.i > mask)) {
-                jl_error(vm, "%d doesn't fit in %d bit%s (the max is %u)", v.as.i,
-                         width, width == 1 ? "" : "s", mask);
+                jl_error(vm, "%d doesn't fit in %d bit%s (the max is %u)", (int)v.as.i,
+                         width, width == 1 ? "" : "s", (unsigned)mask);
                 goto error;
             }
             uint32_t u = (uint32_t)target.as.i;
@@ -931,7 +931,7 @@ int jl_report_leaks(JlVM *vm) {
         uint32_t len = 0;
         heap_get(&vm->heap, ref, &d, &len);
         vm_errf(vm, "leak: %s #%u (%u bytes) allocated at line %u was never freed\n",
-                e->kind == BLOCK_STR ? "str" : "buf", (unsigned)i, len, e->alloc_line);
+                e->kind == BLOCK_STR ? "str" : "buf", (unsigned)i, (unsigned)len, (unsigned)e->alloc_line);
         leaks++;
     }
     if (leaks > 0) {
@@ -959,6 +959,6 @@ void jl_print_stats(JlVM *vm) {
         vm_errf(vm, "  %-14s %llu\n", opcode_name((uint8_t)best),
                 (unsigned long long)vm->op_counts[best]);
     }
-    vm_errf(vm, "heap peak: %u bytes, allocs: %u, frees: %u\n", vm->heap.peak_bytes,
-            vm->heap.total_allocs, vm->heap.total_frees);
+    vm_errf(vm, "heap peak: %u bytes, allocs: %u, frees: %u\n", (unsigned)vm->heap.peak_bytes,
+            (unsigned)vm->heap.total_allocs, (unsigned)vm->heap.total_frees);
 }
