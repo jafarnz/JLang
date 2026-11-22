@@ -1,0 +1,24 @@
+// button.jl - react to inputs with event handlers (like interrupts).
+// Run: jlang run examples/button.jl --emit press --emit press --emit press
+// Or read a pin:  jlang run examples/button.jl --pin 4=0
+
+let LED = 2
+let BUTTON = 4
+let presses = 0
+
+pin_mode(LED, "out")
+pin_mode(BUTTON, "in_pullup")   // reads 1 until the button connects it to ground
+
+// Polling: read the pin directly.
+if pin_read(BUTTON) == 0 {
+    print("button is held down right now")
+} else {
+    print("button is up")
+}
+
+// Events: the host calls this every time "press" happens.
+on press {
+    presses += 1
+    pin_write(LED, presses % 2)   // toggle the LED
+    printf("press #{} -> LED {}\n", presses, presses % 2)
+}

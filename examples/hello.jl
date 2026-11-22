@@ -1,0 +1,20 @@
+// hello.jl - the basics in 20 lines.
+// Run: jlang run examples/hello.jl
+
+print("Hello from JLang!")
+
+let year = 2026
+let mask = 0b1111_0000          // underscores make long numbers readable
+printf("{} in hex is {x}, in binary {b}\n", year, year, year)
+printf("mask {b8} keeps the top 4 bits of a byte\n", mask)
+
+fn square(n) {
+    return n * n
+}
+
+for i in 1..6 {
+    printf("{}^2 = {}\n", i, square(i))
+}
+
+// Ints are 32-bit and wrap around, exactly like a CPU register.
+print("2147483647 + 1 =", 2147483647 + 1)

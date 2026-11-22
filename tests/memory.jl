@@ -1,0 +1,22 @@
+let b = alloc(8)
+print(b, len(b), b[0])                     // expect: <buf #0, 8 bytes> 8 0
+write32(b, 0, 0x11223344)
+print(b[0], b[3])                          // expect: 68 17
+printf("{x}\n", read32(b, 0))              // expect: 0x11223344
+write16(b, 4, 0xBEEF)
+printf("{x} {x2}\n", read16(b, 4), b[5])   // expect: 0xBEEF 0xBE
+b[7] = 255
+b[7] += 0
+print(b[7])                                // expect: 255
+let c = alloc(100)
+free(b)
+let d = alloc(4)
+print(d)                                   // expect: <buf #0, 4 bytes>
+free(c)
+free(d)
+mem()
+// expect: heap: 65536 bytes
+// expect:   in use   : 0 bytes in 0 block(s)
+// expect:   free     : 65524 bytes (largest free block: 65524 bytes)
+// expect:   overhead : 12 bytes (block headers + alignment)
+// expect:   peak use : 108 bytes, allocs: 3, frees: 3

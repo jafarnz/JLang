@@ -1,0 +1,408 @@
+/*
+ * main.c - the `jlang` command-line tool.
+ *
+ *   jlang new blinky        create a starter project
+ *   jlang run main.jl       run a script on the simulated board
+ *   jlang check main.jl     only check for errors (fast; good for editors and AI agents)
+ *   jlang xray main.jl      run and show every instruction and the stack
+ *   jlang dis main.jl       show the bytecode without running
+ *   jlang repl              type JLang and see results immediately
+ */
+#define _POSIX_C_SOURCE 200809L
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+#include "board_sim.h"
+#include "jlang.h"
+
+enum {
+    EXIT_USAGE = 64,
+    EXIT_COMPILE = 65,
+    EXIT_NOFILE = 66,
+    EXIT_RUNTIME = 70,
+};
+
+#define MAX_EMITS 64
+
+typedef struct {
+    const char *command;
+    const char *file;
+    uint32_t heap;
+    bool stats;
+    bool no_leak_check;
+    const char *emits[MAX_EMITS];
+    int emit_count;
+    BoardSimOptions board;
+} Options;
+
+static void usage(FILE *f) {
+    fprintf(f,
+        "JLang " JL_VERSION " - a small language for learning how hardware really works\n"
+        "\n"
+        "usage:\n"
+        "  jlang new <name>           create a starter project in ./<name>\n"
+        "  jlang run <file.jl>        run a script on the simulated board\n"
+        "  jlang check <file.jl>      check for errors without running\n"
+        "  jlang xray <file.jl>       run, showing every instruction and the stack\n"
+        "  jlang dis <file.jl>        print the compiled bytecode\n"
+        "  jlang repl                 interactive prompt\n"
+        "  jlang version\n"
+        "\n"
+        "options for run / xray:\n"
+        "  --emit <event>             after the script, fire an event (repeatable)\n"
+        "  --pin <n>=<0|1>            value the simulated pin n reads as input\n"
+        "  --answer <text>            what the simulated ask() replies\n"
+        "  --heap <bytes>             heap size (default %u)\n"
+        "  --realtime                 make delay() actually wait\n"
+        "  --stats                    print instruction counts and heap use\n"
+        "  --no-leak-check            don't report unfreed memory at exit\n",
+        JL_DEFAULT_HEAP);
+}
+
+static char *read_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) return NULL;
+    size_t cap = 4096, len = 0;
+    char *buf = malloc(cap);
+    if (buf == NULL) {
+        fclose(f);
+        return NULL;
+    }
+    size_t n;
+    while ((n = fread(buf + len, 1, cap - len - 1, f)) > 0) {
+        len += n;
+        if (len + 1 == cap) {
+            cap *= 2;
+            char *bigger = realloc(buf, cap);
+            if (bigger == NULL) {
+                free(buf);
+                fclose(f);
+                return NULL;
+            }
+            buf = bigger;
+        }
+    }
+    fclose(f);
+    buf[len] = '\0';
+    return buf;
+}
+
+static bool parse_args(int argc, char **argv, Options *o) {
+    memset(o, 0, sizeof *o);
+    o->heap = JL_DEFAULT_HEAP;
+    board_sim_default_options(&o->board);
+    if (argc < 2) return false;
+    o->command = argv[1];
+
+    for (int i = 2; i < argc; i++) {
+        const char *a = argv[i];
+        bool has_value = i + 1 < argc;
+        if (strcmp(a, "--stats") == 0) {
+            o->stats = true;
+        } else if (strcmp(a, "--realtime") == 0) {
+            o->board.realtime = true;
+        } else if (strcmp(a, "--no-leak-check") == 0) {
+            o->no_leak_check = true;
+        } else if (strcmp(a, "--emit") == 0 && has_value) {
+            if (o->emit_count == MAX_EMITS) {
+                fprintf(stderr, "jlang: too many --emit options\n");
+                return false;
+            }
+            o->emits[o->emit_count++] = argv[++i];
+        } else if (strcmp(a, "--answer") == 0 && has_value) {
+            o->board.ai_answer = argv[++i];
+        } else if (strcmp(a, "--heap") == 0 && has_value) {
+            char *end;
+            long v = strtol(argv[++i], &end, 10);
+            if (*end != '\0' || v < 64 || v > 64L * 1024 * 1024) {
+                fprintf(stderr, "jlang: --heap must be a number of bytes between 64 and 67108864\n");
+                return false;
+            }
+            o->heap = (uint32_t)v;
+        } else if (strcmp(a, "--pin") == 0 && has_value) {
+            int pin, val;
+            char extra;
+            if (sscanf(argv[++i], "%d=%d%c", &pin, &val, &extra) != 2 || pin < 0 ||
+                pin >= SIM_PINS || (val != 0 && val != 1)) {
+                fprintf(stderr, "jlang: --pin expects <pin>=<0|1>, like --pin 4=1\n");
+                return false;
+            }
+            o->board.pin_inputs[pin] = val;
+        } else if (a[0] == '-' && a[1] == '-') {
+            fprintf(stderr, "jlang: unknown or incomplete option '%s'\n", a);
+            return false;
+        } else if (o->file == NULL) {
+            o->file = a;
+        } else {
+            fprintf(stderr, "jlang: unexpected argument '%s'\n", a);
+            return false;
+        }
+    }
+    return true;
+}
+
+static JlVM *make_vm(const Options *o) {
+    JlConfig cfg;
+    jl_default_config(&cfg);
+    cfg.heap_size = o->heap;
+    JlVM *vm = jl_new(&cfg);
+    if (vm == NULL) {
+        fprintf(stderr, "jlang: could not create the VM (out of memory?)\n");
+        return NULL;
+    }
+    board_sim_register(vm, &o->board);
+    return vm;
+}
+
+static int run_file(const Options *o, bool xray) {
+    char *src = read_file(o->file);
+    if (src == NULL) {
+        fprintf(stderr, "jlang: can't read '%s': %s\n", o->file, strerror(errno));
+        return EXIT_NOFILE;
+    }
+    JlVM *vm = make_vm(o);
+    if (vm == NULL) {
+        free(src);
+        return EXIT_RUNTIME;
+    }
+    jl_set_trace(vm, xray);
+
+    int code = 0;
+    JlResult r = jl_run_source(vm, src);
+    if (r == JL_COMPILE_ERROR) code = EXIT_COMPILE;
+    if (r == JL_RUNTIME_ERROR) code = EXIT_RUNTIME;
+
+    for (int i = 0; code == 0 && i < o->emit_count; i++) {
+        r = jl_emit(vm, o->emits[i]);
+        if (r == JL_NO_HANDLER) {
+            fflush(stdout);
+            fprintf(stderr, "jlang: --emit %s: the script has no 'on %s { ... }' handler\n",
+                    o->emits[i], o->emits[i]);
+            code = EXIT_RUNTIME;
+        } else if (r != JL_OK) {
+            code = EXIT_RUNTIME;
+        }
+    }
+
+    if (code != EXIT_COMPILE) {
+        if (o->stats) jl_print_stats(vm);
+        /* After a crash, unfreed memory is expected; only report leaks
+         * for programs that finished normally. */
+        if (!o->no_leak_check && code == 0) jl_report_leaks(vm);
+    }
+    fflush(stdout);
+    jl_free(vm);
+    free(src);
+    return code;
+}
+
+static int compile_only(const Options *o, bool disassemble) {
+    char *src = read_file(o->file);
+    if (src == NULL) {
+        fprintf(stderr, "jlang: can't read '%s': %s\n", o->file, strerror(errno));
+        return EXIT_NOFILE;
+    }
+    JlVM *vm = make_vm(o);
+    if (vm == NULL) {
+        free(src);
+        return EXIT_RUNTIME;
+    }
+    JlResult r = jl_disassemble_or_check(vm, src, disassemble);
+    if (r == JL_OK && !disassemble) printf("ok: %s has no errors\n", o->file);
+    fflush(stdout);
+    jl_free(vm);
+    free(src);
+    return r == JL_OK ? 0 : EXIT_COMPILE;
+}
+
+/* ---- jlang repl ---------------------------------------------------- */
+
+static int brace_balance(const char *s) {
+    int depth = 0;
+    bool in_str = false;
+    for (; *s; s++) {
+        if (in_str) {
+            if (*s == '\\' && s[1]) s++;
+            else if (*s == '"') in_str = false;
+        } else if (*s == '"') {
+            in_str = true;
+        } else if (*s == '/' && s[1] == '/') {
+            while (*s && *s != '\n') s++;
+            if (!*s) break;
+        } else if (*s == '{') {
+            depth++;
+        } else if (*s == '}') {
+            depth--;
+        }
+    }
+    return depth;
+}
+
+static int repl(const Options *o) {
+    JlVM *vm = make_vm(o);
+    if (vm == NULL) return EXIT_RUNTIME;
+    printf("JLang %s. Type code and press Enter. Blocks { } can span lines.\n"
+           "Try: print(0b1010 | 0x0F)    Quit: Ctrl-D\n", JL_VERSION);
+
+    char *buf = NULL;
+    size_t len = 0;
+    char line[1024];
+    for (;;) {
+        fputs(len == 0 ? "jl> " : "... ", stdout);
+        fflush(stdout);
+        if (fgets(line, sizeof line, stdin) == NULL) break;
+        size_t n = strlen(line);
+        char *bigger = realloc(buf, len + n + 1);
+        if (bigger == NULL) break;
+        buf = bigger;
+        memcpy(buf + len, line, n + 1);
+        len += n;
+        if (brace_balance(buf) > 0) continue;
+        jl_run_source(vm, buf);
+        len = 0;
+        buf[0] = '\0';
+    }
+    putchar('\n');
+    free(buf);
+    jl_free(vm);
+    return 0;
+}
+
+/* ---- jlang new ----------------------------------------------------- */
+
+static const char *STARTER_MAIN =
+    "// main.jl - your first JLang program.\n"
+    "// Run it:   jlang run main.jl --emit button\n"
+    "\n"
+    "let LED = 2      // the LED is wired to pin 2\n"
+    "let BUTTON = 4   // the button is wired to pin 4\n"
+    "\n"
+    "pin_mode(LED, \"out\")\n"
+    "pin_mode(BUTTON, \"in_pullup\")\n"
+    "\n"
+    "// Blink 3 times. delay() uses virtual time in the simulator,\n"
+    "// so this finishes instantly but millis() still counts the time.\n"
+    "for i in 0..3 {\n"
+    "    pin_write(LED, 1)\n"
+    "    delay(250)\n"
+    "    pin_write(LED, 0)\n"
+    "    delay(250)\n"
+    "}\n"
+    "printf(\"blinked 3 times in {} ms\\n\", millis())\n"
+    "\n"
+    "// A status register: bits 7..4 = mode, bit 0 = LED on.\n"
+    "let status = 0\n"
+    "status[7..4] = 0b1010\n"
+    "status[0] = 1\n"
+    "printf(\"status = {b8} ({x2})\\n\", status, status)\n"
+    "\n"
+    "// Runs every time the 'button' event fires (like an interrupt).\n"
+    "on button {\n"
+    "    print(\"button pressed!\")\n"
+    "    pin_write(LED, 1)\n"
+    "}\n";
+
+static const char *STARTER_README =
+    "# %s\n"
+    "\n"
+    "A [JLang](https://github.com/jafarnz/JLang) project.\n"
+    "\n"
+    "```bash\n"
+    "jlang run main.jl --emit button   # run on the simulated board\n"
+    "jlang check main.jl               # check for errors\n"
+    "jlang xray main.jl                # watch the virtual machine work\n"
+    "```\n";
+
+static const char *STARTER_AGENTS =
+    "# Notes for AI coding agents\n"
+    "\n"
+    "This project is written in JLang, a small language for microcontrollers.\n"
+    "\n"
+    "- Check code with `jlang check main.jl` (exit 0 = ok, 65 = compile error).\n"
+    "- Run with `jlang run main.jl`; add `--emit <event>` to fire `on <event>` handlers.\n"
+    "- Full reference: https://github.com/jafarnz/JLang/blob/main/docs/llms.txt\n"
+    "\n"
+    "Key rules:\n"
+    "- Ints are 32-bit and wrap. No floats. Strings are read-only.\n"
+    "- No semicolons. Blocks use { }. Conditions need no parentheses.\n"
+    "- `let x = 1`, `fn add(a, b) { return a + b }`, `for i in 0..10 { }`.\n"
+    "- `x[3]` is bit 3 of an int; `x[7..4] = 5` sets bits 7..4.\n"
+    "- `alloc(n)` returns a buf of n bytes that MUST be freed with `free(buf)`.\n"
+    "- Strings returned by `ask()` live on the heap and must be freed too.\n"
+    "- Assignment is a statement, never inside an expression.\n";
+
+static bool write_text(const char *path, const char *text) {
+    FILE *f = fopen(path, "wx"); /* x: never overwrite */
+    if (f == NULL) return false;
+    fputs(text, f);
+    fclose(f);
+    return true;
+}
+
+static int new_project(const char *name) {
+    if (name == NULL) {
+        fprintf(stderr, "usage: jlang new <name>\n");
+        return EXIT_USAGE;
+    }
+    if (mkdir(name, 0755) != 0) {
+        fprintf(stderr, "jlang: can't create folder '%s': %s\n", name, strerror(errno));
+        return EXIT_USAGE;
+    }
+    char path[1024], readme[1024];
+    snprintf(readme, sizeof readme, STARTER_README, name);
+    snprintf(path, sizeof path, "%s/main.jl", name);
+    bool ok = write_text(path, STARTER_MAIN);
+    snprintf(path, sizeof path, "%s/README.md", name);
+    ok = ok && write_text(path, readme);
+    snprintf(path, sizeof path, "%s/AGENTS.md", name);
+    ok = ok && write_text(path, STARTER_AGENTS);
+    if (!ok) {
+        fprintf(stderr, "jlang: couldn't write the project files\n");
+        return EXIT_USAGE;
+    }
+    printf("created %s/\n  main.jl     your program\n  README.md\n  AGENTS.md   "
+           "instructions for AI coding agents\n\nnext:\n  cd %s\n  jlang run main.jl "
+           "--emit button\n", name, name);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    Options o;
+    if (!parse_args(argc, argv, &o)) {
+        if (argc < 2) usage(stderr);
+        else fprintf(stderr, "run 'jlang help' for usage\n");
+        return EXIT_USAGE;
+    }
+    const char *cmd = o.command;
+
+    if (strcmp(cmd, "help") == 0 || strcmp(cmd, "--help") == 0 || strcmp(cmd, "-h") == 0) {
+        usage(stdout);
+        return 0;
+    }
+    if (strcmp(cmd, "version") == 0 || strcmp(cmd, "--version") == 0) {
+        printf("jlang %s\n", JL_VERSION);
+        return 0;
+    }
+    if (strcmp(cmd, "new") == 0) return new_project(o.file);
+    if (strcmp(cmd, "repl") == 0) return repl(&o);
+
+    bool known = strcmp(cmd, "run") == 0 || strcmp(cmd, "xray") == 0 ||
+                 strcmp(cmd, "check") == 0 || strcmp(cmd, "dis") == 0;
+    if (!known) {
+        fprintf(stderr, "jlang: unknown command '%s'\n\n", cmd);
+        usage(stderr);
+        return EXIT_USAGE;
+    }
+    if (o.file == NULL) {
+        fprintf(stderr, "usage: jlang %s <file.jl>\n", cmd);
+        return EXIT_USAGE;
+    }
+    if (strcmp(cmd, "run") == 0) return run_file(&o, false);
+    if (strcmp(cmd, "xray") == 0) return run_file(&o, true);
+    if (strcmp(cmd, "check") == 0) return compile_only(&o, false);
+    return compile_only(&o, true);
+}

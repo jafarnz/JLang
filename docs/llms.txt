@@ -1,0 +1,60 @@
+# JLang
+
+> JLang is a small, open, bytecode-interpreted language for programming microcontrollers and learning how hardware works. 32-bit wrapping ints, first-class bit slicing, manual but checked memory, a desktop board simulator with virtual time, and interrupt-style event handlers. Implemented in portable C99.
+
+## Tooling
+- `jlang check FILE` compile only. Exit 0 = ok, 65 = compile error. Errors: `error (line L, col C): message` + source line + caret.
+- `jlang run FILE [--emit EVENT]... [--pin N=0|1] [--answer TEXT] [--heap BYTES] [--stats]` run on the simulated board. Exit 70 = runtime error: `runtime error (line L): message` + call trace. Unfreed memory is reported at exit as `leak: ...` on stderr.
+- `jlang xray FILE` trace every instruction. `jlang dis FILE` print bytecode. `jlang new NAME` scaffold a project.
+
+## Syntax
+- No semicolons. Blocks `{ }`. Conditions without parentheses. Comments `//` and `/* */`.
+- `let x = 1` (top level = global, in a block = local). `let y` is nil.
+- `fn name(a, b) { return a + b }` top level only. Functions are values.
+- `if c { } else if d { } else { }`, `while c { }`, `for i in 0..n { }` (end exclusive), `break`, `continue`.
+- `on EVENT { }` top level only; runs when the host fires EVENT (`--emit EVENT` or `emit("EVENT")`).
+- Assignment is a statement only: `x = 1`, `x += 1` (also -= *= /= %= &= |= ^= <<= >>=), `buf[i] = v`, `reg[3] = 1`, `reg[7..4] = 5`. Never inside an expression.
+
+## Types
+- nil, bool, int (32-bit signed, wraps; no floats), str (read-only bytes), buf (heap bytes), fn, built-in.
+- Literals: `123`, `1_000`, `0xFF`, `0b1010`, `'A'` (=65), `"text\n"` (escapes \n \t \r \0 \\ \" \' \xHH), `true`, `false`, `nil`.
+- Truthiness: nil, false, 0 are false; everything else true.
+
+## Operators (low to high precedence)
+`||` `&&` (short-circuit, give bool) · `==` `!=` · `<` `<=` `>` `>=` (ints) · `|` · `^` · `&` · `<<` `>>` (0..31, >> arithmetic) · `+` `-` · `*` `/` `%` (truncate toward zero; /0 is an error) · unary `-` `!` `~` · call `f()`, index `x[i]`, bit range `x[hi..lo]`.
+NOTE: bitwise binds tighter than comparison: `x & 1 == 0` is `(x & 1) == 0`. There is no string `+`.
+
+## Bits
+- `x[i]` on an int reads bit i (0..31) as 0/1. `x[hi..lo]` reads bits hi down to lo.
+- On a variable: `x[i] = 0|1|true|false`, `x[hi..lo] = v` (error if v doesn't fit), `x[i] ^= 1`.
+- `u8(v)` `i8(v)` `u16(v)` `i16(v)` keep the low bits.
+
+## Memory
+- `alloc(n)` returns a zeroed buf of n bytes; every alloc needs exactly one `free(buf)`.
+- `buf[i]` reads/writes a byte 0..255 (storing outside 0..255 is an error; use u8()).
+- `len(x)` for buf/str. `read16/read32(buf, off)`, `write16/write32(buf, off, v)` are little-endian.
+- Use after free, double free, out-of-bounds and leaks are detected and reported with line numbers.
+- Strings returned by built-ins such as `ask()` are on the heap and must be freed. String literals must not be freed.
+- `mem()` prints heap stats, `memmap()` prints the block layout.
+
+## Built-ins
+print(...) · printf(fmt, ...) placeholders {} {d} {x} {b} {c} with optional width e.g. {x2} {b8}, `{{ }}` literal braces, no automatic newline · alloc(n) · free(x) · len(x) · read16 read32 write16 write32 · u8 i8 u16 i16 · mem() · memmap() · cycles() · assert(cond, msg) · emit(name)
+
+## Board built-ins (simulated on desktop, real on device)
+pin_mode(pin, "out"|"in"|"in_pullup") · pin_write(pin, 0|1) (pin must be "out") · pin_read(pin) (pin must be an input) · delay(ms) (virtual time) · millis() · capture() -> buf (free it) · ask(photo_buf, question_str) -> str (free it) · speak(text, lang="en")
+
+## Example
+```
+let LED = 2
+pin_mode(LED, "out")
+let status = 0
+status[7..4] = 0b1010
+on button {
+    let photo = capture()
+    let answer = ask(photo, "What bus is this?")
+    free(photo)
+    speak(answer, "en")
+    free(answer)
+    pin_write(LED, 1)
+}
+```

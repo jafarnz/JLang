@@ -1,0 +1,31 @@
+// registers.jl - bit slicing, the way hardware registers really work.
+// Run: jlang run examples/registers.jl
+//
+// Many chips are configured by writing bit fields inside one register.
+// Here is a made-up sensor CONFIG register (8 bits):
+//
+//   bit  7    6..4         3..2        1..0
+//        ON   SAMPLE_RATE  GAIN        MODE
+
+let config = 0
+config[7] = 1            // turn the sensor on
+config[6..4] = 0b101     // sample rate setting 5
+config[3..2] = 2         // gain x4
+config[1..0] = 0b01      // continuous mode
+printf("CONFIG = {b8} = {x2}\n", config, config)
+
+// Reading fields back out:
+printf("on={} rate={} gain={} mode={}\n", config[7], config[6..4], config[3..2], config[1..0])
+
+// Colours on small screens are often RGB565: 5 bits red, 6 green, 5 blue.
+fn rgb565(r, g, b) {
+    let c = 0
+    c[15..11] = r >> 3
+    c[10..5] = g >> 2
+    c[4..0] = b >> 3
+    return c
+}
+printf("orange in RGB565 = {x4}\n", rgb565(255, 165, 0))
+
+// Explicit widths make overflow visible instead of a silent surprise.
+print("u8(300) =", u8(300), "  i8(200) =", i8(200))
