@@ -1,0 +1,10 @@
+// Bits: count the 1 bits in every number below 300,000.
+let ones = 0
+for n in 0..300000 {
+    let v = n
+    while v != 0 {
+        v = v & (v - 1)
+        ones += 1
+    }
+}
+print(ones)

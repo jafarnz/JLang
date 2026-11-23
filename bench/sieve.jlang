@@ -1,0 +1,16 @@
+// Memory: the primes below 200,000, one byte per number.
+let N = 200000
+let composite = alloc(N)
+let count = 0
+for i in 2..N {
+    if composite[i] == 0 {
+        count += 1
+        let j = i * 2
+        while j < N {
+            composite[j] = 1
+            j += i
+        }
+    }
+}
+print(count)
+free(composite)

@@ -1,0 +1,8 @@
+// A tight loop of arithmetic, like a filter running over samples.
+let total = 0
+let i = 0
+while i < 3000000 {
+    total = (total + i * 7) & 0xFFFFFF
+    i += 1
+}
+print(total)

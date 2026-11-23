@@ -1,0 +1,8 @@
+// Text: build 20,000 short messages, as a program sending readings would.
+let chars = 0
+for i in 0..20000 {
+    let msg = fmt("reading {}: {} C", i, i % 40)
+    chars += len(msg)
+    free(msg)
+}
+print(chars)
