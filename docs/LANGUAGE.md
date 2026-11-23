@@ -13,12 +13,15 @@ Version 0.1. Everything here is tested in [`tests/`](../tests).
 7. [Functions](#functions)
 8. [Bits](#bits)
 9. [Memory](#memory)
-10. [Strings](#strings)
-11. [Events](#events)
-12. [Built-in functions](#built-in-functions)
-13. [Board built-ins](#board-built-ins)
-14. [Errors](#errors)
-15. [Limits](#limits)
+10. [Arrays](#arrays)
+11. [Structs](#structs)
+12. [Strings](#strings)
+13. [Events and timers](#events-and-timers)
+14. [Built-in functions](#built-in-functions)
+15. [Board built-ins](#board-built-ins)
+16. [Errors](#errors)
+17. [Native code](#native-code)
+18. [Limits](#limits)
 
 ## Source files
 
@@ -241,6 +244,22 @@ free(zeros)
 - `==` is true only for the same array.
 - Not available in native code yet.
 
+## Structs
+
+```jlang
+struct Reading { sensor, value }
+let r = Reading { sensor: 3, value: 2150 }
+r.value += 10
+print(r)          // Reading { sensor: 3, value: 2160 }
+free(r)
+```
+
+A struct is declared at the top level. A literal gives every field, in any
+order, and lives on the heap: 8 bytes per field, shown field by field by
+`memmap()`. Structs are passed by reference, are equal only to themselves, and
+are freed with `free`. Reading a field that doesn't exist is a runtime error
+that lists the fields.
+
 ## Strings
 
 ```jlang
@@ -259,18 +278,46 @@ print(s[0])            // 104: strings index as bytes
 - String literals live in the program, not on the heap. Strings created at
   runtime by built-ins (like `ask()`) live on the heap and **must be freed**.
 
-## Events
+## Events and timers
 
 ```jlang
 on button {
     print("pressed")
 }
+
+every 500ms {
+    toggle(2)
+}
+
+after 2s {
+    print("two seconds in")
+}
 ```
 
-An `on` handler runs every time the host fires that event: a button interrupt,
-a timer, a message. On the desktop, fire events with `--emit button`, or from
-code with `emit("button")`. Handlers are declared at the top level, one per
-event name.
+An `on` handler runs every time the host fires that event: a button interrupt
+or a message. On the desktop, fire events with `--emit button`, or from code
+with `emit("button")`. Handlers are declared at the top level, one per event
+name.
+
+`every` repeats its block and `after` runs it once, the given number of
+milliseconds after the line runs. `500ms` and `2s` are time literals: plain
+ints of milliseconds. Timers run after the top level finishes, in simulated
+time for `jlang run` (10 seconds unless `--for` says otherwise) and for real in
+the ESP32 firmware. `stop_timer()` inside one stops it. One handler or timer
+runs at a time. Hosts drive timers with `jl_set_clock`, `jl_next_timer` and
+`jl_run_timers` (see `src/jlang.h`).
+
+## Consts
+
+```jlang
+const LED = 2
+const GPIO_OUT = 0x6009_1004
+```
+
+A `const` is a number the compiler puts wherever its name is used, so it takes
+no memory and works in native code. The value must be an int literal, a
+negative literal or another const. `jlang svd chip.svd` writes a chip's
+registers and bit fields as consts.
 
 ## Built-in functions
 
@@ -347,6 +394,20 @@ Colour names: red, green, blue, yellow, cyan, magenta, orange, purple, pink,
 white, warm and off. Notes are a letter, an optional `#` or `b`, and an octave:
 `"A4"` is 440 Hz.
 
+### I2C and SPI
+
+| Function | Description |
+|---|---|
+| `i2c_scan()` | addresses of the devices that answer, as an array you free |
+| `i2c_write(addr, byte, ...)` | send bytes; the first is usually a register number |
+| `i2c_read(addr, reg)` | one byte from a register |
+| `i2c_read16(addr, reg)` | two bytes from a register, high byte first |
+| `spi_write(cs, byte, ...)` | select the chip on pin `cs` and send bytes |
+| `spi_transfer(cs, byte)` | send a byte and return the byte received |
+
+The simulated bus has a TMP102 temperature sensor at `0x48` (set with
+`--temperature`), an MPU-6050 at `0x68` and an SH1106 OLED at `0x3C`.
+
 ### LED panel
 
 A grid of colour LEDs, drawn a frame at a time. The simulated panel is 60×7
@@ -386,7 +447,9 @@ found, `70` runtime error.
 
 ## Native code
 
-`jlang emu` and `jlang build` compile a program to RISC-V machine code instead of running it on the VM. Native code supports the whole language except the parts that need a heap: `alloc`, `free`, `len`, `read16`, `read32`, `write16`, `write32`, indexing strings, `mem`, `memmap`, `capture`, `ask`, `speak`, arrays, string building, `led_text` and `led_size` are compile errors. `led`, `led_clear`, `led_show`, `led_width`, `led_height` and `rgb` work, through the board's `jl_hal_led_*` functions. Two built-ins exist for native code:
+`jlang emu` and `jlang build` compile a program to RISC-V machine code instead of running it on the VM. This is experimental and covers a subset of the language, with one rule: a program either behaves exactly as it does on the VM, or it is a compile error that says why. `tests/native.sh` checks every example and test program both ways, and `tests/native-skips.txt` lists, with the reason, the ones native code doesn't run.
+
+Native code has no heap and no types at run time; every value is a 32-bit word. So `alloc`, `free`, `len`, `read16`, `read32`, `write16`, `write32`, indexing strings, `mem`, `memmap`, `capture`, `ask`, `speak`, arrays, structs, string building, timers, the part built-ins, I2C and SPI, `led_text` and `led_size` are compile errors. Functions can be given only numbers and functions and can return only numbers or bools. Arithmetic on a bool, nil or string is a compile error, values of different types compare unequal, and a variable that holds a bool, string or function keeps that type. `led`, `led_clear`, `led_show`, `led_width`, `led_height` and `rgb` work, through the board's `jl_hal_led_*` functions. `jlang emu --pipeline` shows how a 5-stage pipeline runs the code, and `jlang wcet` the worst-case cycles of each handler. Two built-ins exist for native code:
 
 | Function | Description |
 |---|---|

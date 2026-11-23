@@ -37,6 +37,7 @@
       "patterns": [
         { "name": "constant.numeric.hex.jlang", "match": "\\b0[xX][0-9A-Fa-f_]+\\b" },
         { "name": "constant.numeric.binary.jlang", "match": "\\b0[bB][01_]+\\b" },
+        { "name": "constant.numeric.time.jlang", "match": "\\b[0-9][0-9_]*(ms|s)\\b" },
         { "name": "constant.numeric.decimal.jlang", "match": "\\b[0-9][0-9_]*\\b" }
       ]
     },
@@ -51,20 +52,20 @@
           "captures": { "1": { "name": "keyword.control.event.jlang" }, "2": { "name": "entity.name.event.jlang" } }
         },
         {
-          "match": "\\b(let)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(let|const|struct)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": { "1": { "name": "storage.type.jlang" }, "2": { "name": "variable.other.jlang" } }
         }
       ]
     },
     "keywords": {
       "patterns": [
-        { "name": "keyword.control.jlang", "match": "\\b(if|else|while|for|in|return|break|continue)\\b" },
+        { "name": "keyword.control.jlang", "match": "\\b(if|else|while|for|in|return|break|continue|every|after)\\b" },
         { "name": "constant.language.jlang", "match": "\\b(true|false|nil)\\b" }
       ]
     },
     "builtins": {
       "name": "support.function.builtin.jlang",
-      "match": "\\b(print|printf|fmt|alloc|free|len|read16|read32|write16|write32|mem|memmap|u8|i8|u16|i16|assert|cycles|emit|pin_mode|pin_write|pin_read|delay|millis|capture|ask|speak|mmio_read32|mmio_write32|mmio_read8|mmio_write8|asm|random|map|clamp|rgb|array|turn_on|turn_off|toggle|brightness|color|color_at|tone|beep|servo|pressed|analog|distance)\\b(?=\\s*\\()"
+      "match": "\\b(print|printf|fmt|alloc|free|len|read16|read32|write16|write32|mem|memmap|u8|i8|u16|i16|assert|cycles|emit|pin_mode|pin_write|pin_read|delay|millis|capture|ask|speak|mmio_read32|mmio_write32|mmio_read8|mmio_write8|asm|random|map|clamp|rgb|array|turn_on|turn_off|toggle|brightness|color|color_at|tone|beep|servo|pressed|analog|distance|led|led_clear|led_show|led_text|led_width|led_height|led_size|stop_timer|i2c_scan|i2c_write|i2c_read|i2c_read16|spi_write|spi_transfer)\\b(?=\\s*\\()"
     },
     "calls": {
       "name": "entity.name.function.call.jlang",
