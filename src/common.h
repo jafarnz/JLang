@@ -39,6 +39,15 @@
 #define JL_EVENTS_MAX 16
 #endif
 
+/* How deeply expressions and blocks can nest. The compiler calls itself
+   for each level, so this bounds how much of the C stack it uses, which
+   matters on a microcontroller with a few kilobytes of stack. */
+#define JL_STR2(x) #x
+#define JL_STR(x) JL_STR2(x)
+#ifndef JL_NESTING_MAX
+#define JL_NESTING_MAX 100
+#endif
+
 /* Struct types per program, and fields per struct. */
 #ifndef JL_STRUCTS_MAX
 #define JL_STRUCTS_MAX 64

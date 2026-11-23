@@ -24,6 +24,7 @@ jobs:
         include:
           - { dir: boards/esp32-vm, target: esp32s3 }
           - { dir: boards/esp32-vm, target: esp32c6 }
+          - { dir: boards/esp32-vm, target: esp32c3 }
           - { dir: boards/esp32-riscv, target: esp32c6 }
           - { dir: boards/esp32-riscv, target: esp32c3 }
           - { dir: glass/firmware, target: esp32c6 }

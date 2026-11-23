@@ -75,6 +75,7 @@ typedef struct {
     Token prev;
     bool had_error;
     bool panic;
+    int nesting; /* expressions and blocks inside each other */
     int errors;
     FnState *fs;
 
@@ -100,6 +101,7 @@ typedef struct {
 
 static void expression(Compiler *c);
 static void parse_precedence(Compiler *c, Precedence prec);
+static void parse_precedence_inner(Compiler *c, Precedence prec);
 static const ParseRule *get_rule(TokenType type);
 static void declaration(Compiler *c);
 static void block(Compiler *c);
@@ -399,6 +401,17 @@ static uint8_t compound_op(TokenType t) {
 static void expression(Compiler *c) { parse_precedence(c, PREC_OR); }
 
 static void parse_precedence(Compiler *c, Precedence prec) {
+    if (++c->nesting > JL_NESTING_MAX) {
+        error_at_current(c, "this is nested too deeply (more than " JL_STR(JL_NESTING_MAX) " levels)");
+        while (!check(c, TOK_EOF)) advance(c); /* skip the rest rather than report each level */
+        c->nesting--;
+        return;
+    }
+    parse_precedence_inner(c, prec);
+    c->nesting--;
+}
+
+static void parse_precedence_inner(Compiler *c, Precedence prec) {
     advance(c);
     ParseFn prefix = get_rule(c->prev.type)->prefix;
     if (prefix == NULL) {
@@ -1108,8 +1121,15 @@ static void statement(Compiler *c) {
 }
 
 static void block(Compiler *c) {
+    if (++c->nesting > JL_NESTING_MAX) {
+        error_at_current(c, "this is nested too deeply (more than " JL_STR(JL_NESTING_MAX) " levels)");
+        while (!check(c, TOK_EOF)) advance(c);
+        c->nesting--;
+        return;
+    }
     while (!check(c, TOK_RBRACE) && !check(c, TOK_EOF)) declaration(c);
     consume(c, TOK_RBRACE, "expected '}' to close this block");
+    c->nesting--;
 }
 
 static bool at_top_level(const Compiler *c);
