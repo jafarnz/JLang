@@ -25,7 +25,7 @@ static bool get_buf(JlVM *vm, const char *fn, int arg_no, Value v,
 
 /* Printing freed memory is a use-after-free like any other access. */
 static bool check_alive(JlVM *vm, Value v) {
-    if (v.type != VAL_BUF && v.type != VAL_ARR && !(v.type == VAL_STR && v.on_heap)) return true;
+    if (v.type != VAL_BUF && v.type != VAL_ARR && v.type != VAL_STRUCT && !(v.type == VAL_STR && v.on_heap)) return true;
     uint8_t *d;
     uint32_t n;
     if (heap_get(&vm->heap, v.as.ref, &d, &n) == HEAP_OK) return true;
@@ -203,8 +203,8 @@ static bool bi_free(JlVM *vm, int argc, Value *args, Value *out) {
     if (v.type == VAL_STR && !v.on_heap) {
         return jl_error(vm, "free(): string literals are not on the heap and can't be freed");
     }
-    if (v.type != VAL_BUF && v.type != VAL_STR && v.type != VAL_ARR) {
-        return jl_error(vm, "free() expects a buf, an array or a heap string, got %s",
+    if (v.type != VAL_BUF && v.type != VAL_STR && v.type != VAL_ARR && v.type != VAL_STRUCT) {
+        return jl_error(vm, "free() expects a buf, an array, a struct or a heap string, got %s",
                         value_type_name(v));
     }
     HeapStatus st = heap_release(&vm->heap, v.as.ref, (uint32_t)vm_current_line(vm));
@@ -345,6 +345,19 @@ static bool bi_memmap(JlVM *vm, int argc, Value *args, Value *out) {
         if (in_free) {
             jl_outf(vm, "0x%04X %6u   free\n", (unsigned)free_start, (unsigned)free_size);
             in_free = false;
+        }
+        if (bi.kind == BLOCK_STRUCT) {
+            /* struct Reading #3: each field is one 8-byte value. */
+            const StructDef *d = &vm->prog.structs[h->handles[bi.handle].tag];
+            const StrConst *name = &vm->prog.strs[d->name];
+            jl_outf(vm, "0x%04X %6u   struct %.*s #%u, allocated at line %u:", (unsigned)bi.off, (unsigned)bi.size,
+                    (int)name->len, name->chars, (unsigned)bi.handle, (unsigned)(h->handles[bi.handle].alloc_line));
+            for (int i = 0; i < d->field_count; i++) {
+                const StrConst *f = &vm->prog.strs[d->fields[i]];
+                jl_outf(vm, "%s %.*s @%d", i ? "," : "", (int)f->len, f->chars, i * (int)sizeof(Value));
+            }
+            jl_outf(vm, "\n");
+            continue;
         }
         jl_outf(vm, "0x%04X %6u   %s #%u, %u bytes used, allocated at line %u\n",
                 (unsigned)bi.off, (unsigned)bi.size, heap_kind_name(bi.kind),

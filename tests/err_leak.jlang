@@ -12,4 +12,4 @@ scratch()
 // expect: [sim   1950ms] AI: answered
 // expect: leak: buf #1 (22 bytes) allocated at line 4 was never freed, and nothing refers to it any more
 // expect: leak: buf #3 (4 bytes) allocated at line 6 was never freed, and nothing refers to it any more
-// expect: hint: free() memory from alloc(), arrays and built strings once you're done with it. Memory a global variable still holds at the end is fine, but on a device that runs for days, a leak eventually uses up all memory.
+// expect: hint: free() memory from alloc(), arrays, structs and built strings once you're done with it. Memory a global variable still holds at the end is fine, but on a device that runs for days, a leak eventually uses up all memory.

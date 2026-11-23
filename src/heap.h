@@ -25,7 +25,7 @@
 
 #include "value.h"
 
-enum { BLOCK_BUF = 0, BLOCK_STR = 1, BLOCK_ARR = 2 };
+enum { BLOCK_BUF = 0, BLOCK_STR = 1, BLOCK_ARR = 2, BLOCK_STRUCT = 3 };
 
 /* "buf", "str" or "array" */
 const char *heap_kind_name(uint8_t kind);
@@ -48,6 +48,7 @@ typedef struct {
     uint16_t gen;        /* bumped on every free */
     uint8_t live;        /* 1 while the block is allocated */
     uint8_t kind;
+    uint16_t tag;        /* BLOCK_STRUCT: the struct type, for memmap() */
 } HandleEntry;
 
 typedef struct {

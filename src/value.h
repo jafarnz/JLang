@@ -25,7 +25,8 @@ typedef enum {
     VAL_BUF,    /* raw bytes on the JLang heap, from alloc() */
     VAL_FN,     /* a function written in JLang */
     VAL_NATIVE, /* a built-in function written in C */
-    VAL_ARR     /* a list of values on the JLang heap */
+    VAL_ARR,    /* a list of values on the JLang heap */
+    VAL_STRUCT  /* named fields on the JLang heap; tag is the struct type */
 } ValueType;
 
 /*
@@ -43,6 +44,7 @@ typedef struct {
 typedef struct {
     uint8_t type;
     uint8_t on_heap;
+    uint16_t tag; /* VAL_STRUCT: which struct type (Program.structs) */
     union {
         bool b;
         int32_t i;
@@ -55,6 +57,7 @@ static inline Value nil_val(void) {
     Value v;
     v.type = VAL_NIL;
     v.on_heap = 0;
+    v.tag = 0;
     v.as.i = 0;
     return v;
 }
@@ -96,8 +99,17 @@ static inline Value buf_val(HeapRef ref) {
     return v;
 }
 
+static inline Value struct_val(HeapRef ref, uint16_t type) {
+    Value v = nil_val();
+    v.type = VAL_STRUCT;
+    v.on_heap = 1;
+    v.tag = type;
+    v.as.ref = ref;
+    return v;
+}
+
 static inline Value arr_val(HeapRef ref) {
-    Value v;
+    Value v = nil_val();
     v.type = VAL_ARR;
     v.on_heap = 1;
     v.as.ref = ref;

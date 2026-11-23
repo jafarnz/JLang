@@ -39,6 +39,14 @@
 #define JL_EVENTS_MAX 16
 #endif
 
+/* Struct types per program, and fields per struct. */
+#ifndef JL_STRUCTS_MAX
+#define JL_STRUCTS_MAX 64
+#endif
+#ifndef JL_FIELDS_MAX
+#define JL_FIELDS_MAX 32
+#endif
+
 /* Maximum number of `every` and `after` timers. */
 #ifndef JL_TIMERS_MAX
 #define JL_TIMERS_MAX 16

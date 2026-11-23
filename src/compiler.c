@@ -531,8 +531,127 @@ static void literal(Compiler *c, bool can_assign) {
     }
 }
 
+/* After an error inside { ... }, skip to the closing brace so the rest of
+   the block doesn't cause confusing follow-on errors. */
+static void skip_block(Compiler *c) {
+    while (!check(c, TOK_RBRACE) && !check(c, TOK_EOF)) advance(c);
+    match(c, TOK_RBRACE);
+}
+
+/* The struct type called `name`, or -1. */
+static int find_struct(Compiler *c, const char *name, int len) {
+    const Program *p = &c->vm->prog;
+    for (int i = 0; i < p->struct_count; i++) {
+        const StrConst *s = &p->strs[p->structs[i].name];
+        if ((int)s->len == len && memcmp(s->chars, name, (size_t)len) == 0) return i;
+    }
+    return -1;
+}
+
+static int find_field(const Program *p, const StructDef *d, const char *name, int len) {
+    for (int i = 0; i < d->field_count; i++) {
+        const StrConst *s = &p->strs[d->fields[i]];
+        if ((int)s->len == len && memcmp(s->chars, name, (size_t)len) == 0) return i;
+    }
+    return -1;
+}
+
+/* "temp, time": a struct's fields, for error messages. */
+static void field_list(const Program *p, const StructDef *d, char *out, size_t size) {
+    size_t n = 0;
+    out[0] = '\0';
+    for (int i = 0; i < d->field_count && n + 1 < size; i++) {
+        const StrConst *s = &p->strs[d->fields[i]];
+        int w = snprintf(out + n, size - n, "%s%.*s", i ? ", " : "", (int)s->len, s->chars);
+        if (w < 0) break;
+        n += (size_t)w;
+    }
+}
+
+/* Reading { temp: 21, time: 0 }: a new struct on the heap. */
+static void struct_literal(Compiler *c, int type) {
+    Program *p = &c->vm->prog;
+    const StructDef *d = &p->structs[type];
+    const StrConst *sname = &p->strs[d->name];
+    emit(c, OP_STRUCT);
+    emit(c, (uint8_t)(type >> 8));
+    emit(c, (uint8_t)type);
+    bool given[JL_FIELDS_MAX] = {false};
+    consume(c, TOK_LBRACE, "expected '{'");
+    while (!check(c, TOK_RBRACE) && !check(c, TOK_EOF)) {
+        consume(c, TOK_IDENT, "expected a field name, like: temp: 21");
+        Token f = c->prev;
+        int slot = find_field(p, d, f.start, f.length);
+        if (slot < 0) {
+            char fields[256];
+            field_list(p, d, fields, sizeof fields);
+            char msg[400];
+            snprintf(msg, sizeof msg, "%.*s has no field '%.*s' (its fields are %s)", (int)sname->len, sname->chars,
+                     f.length, f.start, fields);
+            error(c, msg);
+            skip_block(c);
+            return;
+        }
+        if (given[slot]) {
+            error(c, "this field is given twice");
+            skip_block(c);
+            return;
+        }
+        given[slot] = true;
+        consume(c, TOK_COLON, "expected ':' after the field name, like: temp: 21");
+        expression(c);
+        emit2(c, OP_INIT_FIELD, (uint8_t)slot);
+        if (!match(c, TOK_COMMA)) break;
+    }
+    consume(c, TOK_RBRACE, "expected '}' after the fields");
+    for (int i = 0; i < d->field_count; i++) {
+        if (!given[i]) {
+            char msg[200];
+            const StrConst *s = &p->strs[d->fields[i]];
+            snprintf(msg, sizeof msg, "%.*s { ... } is missing the field '%.*s'", (int)sname->len, sname->chars,
+                     (int)s->len, s->chars);
+            error(c, msg);
+            return;
+        }
+    }
+}
+
+/* value.field, value.field = x and value.field += x */
+static void field_(Compiler *c, bool can_assign) {
+    consume(c, TOK_IDENT, "expected a field name after '.'");
+    Token f = c->prev;
+    int si = program_intern(&c->vm->prog, f.start, (uint32_t)f.length);
+    if (si < 0 || si > 0xFFFF) {
+        error(c, "too many names in one program");
+        return;
+    }
+    if (can_assign && match(c, TOK_EQ)) {
+        expression(c);
+        emit(c, OP_SET_FIELD);
+    } else if (can_assign && is_compound(c->cur.type)) {
+        TokenType op = c->cur.type;
+        advance(c);
+        emit(c, OP_DUP);
+        emit(c, OP_GET_FIELD);
+        emit(c, (uint8_t)(si >> 8));
+        emit(c, (uint8_t)si);
+        expression(c);
+        emit(c, compound_op(op));
+        emit(c, OP_SET_FIELD);
+    } else {
+        emit(c, OP_GET_FIELD);
+    }
+    emit(c, (uint8_t)(si >> 8));
+    emit(c, (uint8_t)si);
+}
+
 static void variable(Compiler *c, bool can_assign) {
     Token name = c->prev;
+    int type = find_struct(c, name.start, name.length);
+    if (type >= 0 && check(c, TOK_LBRACE)) {
+        struct_literal(c, type);
+        return;
+    }
     uint8_t get, set;
     int arg = resolve_local(c, &name);
     if (arg >= 0) {
@@ -718,6 +837,7 @@ static void array_literal(Compiler *c, bool can_assign) {
 static const ParseRule rules[TOK_COUNT] = {
     [TOK_LPAREN] = {grouping, call, PREC_CALL},
     [TOK_LBRACKET] = {array_literal, index_, PREC_CALL},
+    [TOK_DOT] = {NULL, field_, PREC_CALL},
     [TOK_MINUS] = {unary, binary, PREC_TERM},
     [TOK_PLUS] = {NULL, binary, PREC_TERM},
     [TOK_STAR] = {NULL, binary, PREC_FACTOR},
@@ -1015,6 +1135,48 @@ static void on_decl(Compiler *c) {
     emit(c, OP_ON);
 }
 
+/* struct Reading { temp, time }: a type with named fields. */
+static void struct_decl(Compiler *c) {
+    if (!at_top_level(c)) error(c, "structs can only be declared at the top level of a file");
+    consume(c, TOK_IDENT, "expected a name after 'struct', like: struct Reading { temp, time }");
+    Token name = c->prev;
+    Program *p = &c->vm->prog;
+    if (find_struct(c, name.start, name.length) >= 0) {
+        error(c, "there is already a struct with this name");
+        return;
+    }
+    if (p->struct_count == JL_STRUCTS_MAX) {
+        error(c, "too many structs in one program");
+        return;
+    }
+    StructDef *d = &p->structs[p->struct_count];
+    memset(d, 0, sizeof *d);
+    d->name = (uint16_t)program_intern(p, name.start, (uint32_t)name.length);
+    consume(c, TOK_LBRACE, "expected '{' and then the field names");
+    while (!check(c, TOK_RBRACE) && !check(c, TOK_EOF)) {
+        consume(c, TOK_IDENT, "expected a field name");
+        Token f = c->prev;
+        if (find_field(p, d, f.start, f.length) >= 0) {
+            error(c, "this field is listed twice");
+            skip_block(c);
+            return;
+        }
+        if (d->field_count == JL_FIELDS_MAX) {
+            error(c, "a struct can have at most 32 fields");
+            skip_block(c);
+            return;
+        }
+        d->fields[d->field_count++] = (uint16_t)program_intern(p, f.start, (uint32_t)f.length);
+        match(c, TOK_COMMA); /* fields go on separate lines or between commas */
+    }
+    consume(c, TOK_RBRACE, "expected '}' after the fields");
+    if (d->field_count == 0) {
+        error(c, "a struct needs at least one field");
+        return;
+    }
+    p->struct_count++;
+}
+
 /* every 500ms { ... } and after 2s { ... }: run code later, on a timer.
    The program's top level finishes first; then the board runs the timers. */
 static void timer_decl(Compiler *c, bool repeat) {
@@ -1040,7 +1202,7 @@ static void synchronize(Compiler *c) {
     c->panic = false;
     while (!check(c, TOK_EOF)) {
         switch (c->cur.type) {
-        case TOK_LET: case TOK_FN: case TOK_ON: case TOK_EVERY: case TOK_AFTER: case TOK_IF: case TOK_WHILE:
+        case TOK_LET: case TOK_FN: case TOK_ON: case TOK_EVERY: case TOK_AFTER: case TOK_STRUCT: case TOK_IF: case TOK_WHILE:
         case TOK_FOR: case TOK_RETURN: case TOK_BREAK: case TOK_CONTINUE:
         case TOK_RBRACE: /* let the enclosing block close normally */
             return;
@@ -1057,6 +1219,8 @@ static void declaration(Compiler *c) {
         fn_decl(c);
     } else if (match(c, TOK_ON)) {
         on_decl(c);
+    } else if (match(c, TOK_STRUCT)) {
+        struct_decl(c);
     } else if (match(c, TOK_EVERY)) {
         timer_decl(c, true);
     } else if (match(c, TOK_AFTER)) {

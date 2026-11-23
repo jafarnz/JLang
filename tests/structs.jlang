@@ -1,0 +1,39 @@
+// Structs: literals, fields, +=, by-reference arguments, arrays of structs, memmap.
+struct Reading {
+    temp
+    time
+}
+
+struct Point { x, y }
+
+let r = Reading { temp: 21, time: millis() }
+print(r)
+r.temp += 2
+r.time = 500
+print(r.temp, r.time)
+
+let points = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+points[1].x = 30
+print(points)
+print(points[0].x + points[1].x)
+
+fn warmer(rd, by) {
+    rd.temp += by
+}
+warmer(r, 5)
+print(r.temp)
+memmap()
+free(r)
+for i in 0..len(points) { free(points[i]) }
+free(points)
+// expect: Reading { temp: 21, time: 0 }
+// expect: 23 500
+// expect: [Point { x: 1, y: 2 }, Point { x: 30, y: 4 }]
+// expect: 31
+// expect: 28
+// expect: offset   size   contents
+// expect: 0x0000     16   struct Reading #0, allocated at line 9: temp @0, time @8
+// expect: 0x001C     16   struct Point #1, allocated at line 15: x @0, y @8
+// expect: 0x0038     16   struct Point #2, allocated at line 15: x @0, y @8
+// expect: 0x0054     16   array #3, 16 bytes used, allocated at line 15
+// expect: 0x0070  65412   free

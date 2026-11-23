@@ -52,6 +52,11 @@ static const char *const names[OP_COUNT] = {
     [OP_ARRAY] = "ARRAY",
     [OP_ADD_TEMP] = "ADD_TEMP",
     [OP_TIMER] = "TIMER",
+    [OP_STRUCT] = "STRUCT",
+    [OP_INIT_FIELD] = "INIT_FIELD",
+    [OP_GET_FIELD] = "GET_FIELD",
+    [OP_SET_FIELD] = "SET_FIELD",
+    [OP_DUP] = "DUP",
 };
 
 const char *opcode_name(uint8_t op) {
@@ -99,6 +104,21 @@ int disassemble_instruction(JlVM *vm, int fn, int offset) {
         return offset + 2;
     case OP_CALL:
         jl_outf(vm, "%-14s %5u   (args)\n", name, ch->code[offset + 1]);
+        return offset + 2;
+    case OP_STRUCT: {
+        uint16_t t = (uint16_t)((ch->code[offset + 1] << 8) | ch->code[offset + 2]);
+        const StrConst *s = &vm->prog.strs[vm->prog.structs[t].name];
+        jl_outf(vm, "%-14s %5u   %.*s\n", name, t, (int)s->len, s->chars);
+        return offset + 3;
+    }
+    case OP_GET_FIELD:
+    case OP_SET_FIELD: {
+        uint16_t f = (uint16_t)((ch->code[offset + 1] << 8) | ch->code[offset + 2]);
+        jl_outf(vm, "%-14s %5u   .%.*s\n", name, f, (int)vm->prog.strs[f].len, vm->prog.strs[f].chars);
+        return offset + 3;
+    }
+    case OP_INIT_FIELD:
+        jl_outf(vm, "%-14s %5u   (field)\n", name, ch->code[offset + 1]);
         return offset + 2;
     case OP_TIMER:
         jl_outf(vm, "%-14s %5u   (%s)\n", name, ch->code[offset + 1], ch->code[offset + 1] ? "every" : "after");

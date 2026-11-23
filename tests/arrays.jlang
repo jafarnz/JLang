@@ -27,4 +27,4 @@ free(t)
 // expect: leak: array #6 (16 bytes) allocated at line 13 was never freed, and nothing refers to it any more
 // expect: leak: array #9 (8 bytes) allocated at line 17 was never freed, and nothing refers to it any more
 // expect: leak: array #10 (8 bytes) allocated at line 17 was never freed, and nothing refers to it any more
-// expect: hint: free() memory from alloc(), arrays and built strings once you're done with it. Memory a global variable still holds at the end is fine, but on a device that runs for days, a leak eventually uses up all memory.
+// expect: hint: free() memory from alloc(), arrays, structs and built strings once you're done with it. Memory a global variable still holds at the end is fine, but on a device that runs for days, a leak eventually uses up all memory.

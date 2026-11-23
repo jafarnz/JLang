@@ -1,0 +1,7 @@
+// A struct literal must give every field.
+// exit: 65
+struct Reading { temp, time }
+let r = Reading { temp: 1 }
+// expect: error (line 4, col 27): Reading { ... } is missing the field 'time'
+// expect:      4 | let r = Reading { temp: 1 }
+// expect:        |                           ^

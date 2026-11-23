@@ -55,6 +55,11 @@ typedef enum {
                          it: a joined string nothing else can refer to, so it is
                          freed once it has been joined again */
     OP_TIMER,         /* u8 repeat: start a timer; pops the interval and the handler */
+    OP_STRUCT,        /* u16 type: push a new struct with every field 0 */
+    OP_INIT_FIELD,    /* u8 slot: pop a value into that field of the struct below it */
+    OP_GET_FIELD,     /* u16 name: replace a struct with one of its fields */
+    OP_SET_FIELD,     /* u16 name: struct, value -> value, setting the field */
+    OP_DUP,           /* duplicate the top value */
 
     OP_COUNT
 } OpCode;
@@ -80,6 +85,13 @@ typedef struct {
     uint32_t len;
 } StrConst;
 
+/* struct Name { a, b }: names are indexes into the string constants. */
+typedef struct {
+    uint16_t name;
+    uint8_t field_count;
+    uint16_t fields[JL_FIELDS_MAX];
+} StructDef;
+
 /* Everything the compiler produced: functions and string constants. */
 typedef struct {
     Function *fns;
@@ -88,6 +100,8 @@ typedef struct {
     StrConst *strs;
     int str_count;
     int str_cap;
+    StructDef structs[JL_STRUCTS_MAX];
+    int struct_count;
 } Program;
 
 void *jl_xrealloc(void *ptr, size_t size);

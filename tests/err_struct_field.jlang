@@ -1,0 +1,7 @@
+// Reading a field that does not exist names the fields that do.
+// exit: 70
+struct Reading { temp, time }
+let r = Reading { temp: 1, time: 2 }
+print(r.tmp)
+// expect: runtime error (line 5): Reading has no field 'tmp' (its fields are temp, time)
+// expect:   in top-level code, line 5

@@ -10,6 +10,7 @@ const char *value_type_name(Value v) {
     case VAL_FN: return "fn";
     case VAL_NATIVE: return "built-in fn";
     case VAL_ARR: return "array";
+    case VAL_STRUCT: return "struct";
     }
     return "?";
 }

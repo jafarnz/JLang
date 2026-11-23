@@ -390,10 +390,40 @@ static void print_array(JlVM *vm, Value v, bool to_err, int depth) {
     vm_write(vm, to_err, "]", 1);
 }
 
+/* Reading { temp: 21, time: 0 } */
+static void print_struct(JlVM *vm, Value v, bool to_err, int depth) {
+    Value *items;
+    uint32_t n;
+    const StructDef *d = &vm->prog.structs[v.tag];
+    const StrConst *name = &vm->prog.strs[d->name];
+    if (heap_get(&vm->heap, v.as.ref, (uint8_t **)(void *)&items, &n) != HEAP_OK) {
+        vm_write(vm, to_err, "<freed struct>", 14);
+        return;
+    }
+    vm_write(vm, to_err, name->chars, name->len);
+    if (depth >= 3) {
+        vm_write(vm, to_err, " { ... }", 8);
+        return;
+    }
+    vm_write(vm, to_err, " { ", 3);
+    for (int i = 0; i < d->field_count; i++) {
+        const StrConst *f = &vm->prog.strs[d->fields[i]];
+        if (i > 0) vm_write(vm, to_err, ", ", 2);
+        vm_write(vm, to_err, f->chars, f->len);
+        vm_write(vm, to_err, ": ", 2);
+        bool quote = items[i].type == VAL_STR;
+        if (quote) vm_write(vm, to_err, "\"", 1);
+        print_value(vm, items[i], to_err, depth + 1);
+        if (quote) vm_write(vm, to_err, "\"", 1);
+    }
+    vm_write(vm, to_err, " }", 2);
+}
+
 static void print_value(JlVM *vm, Value v, bool to_err, int depth) {
     char buf[64];
     switch ((ValueType)v.type) {
     case VAL_ARR: print_array(vm, v, to_err, depth); return;
+    case VAL_STRUCT: print_struct(vm, v, to_err, depth); return;
     case VAL_NIL: vm_write(vm, to_err, "nil", 3); return;
     case VAL_BOOL:
         if (v.as.b) vm_write(vm, to_err, "true", 4);
@@ -460,6 +490,7 @@ static int values_equal(JlVM *vm, Value a, Value b) {
     case VAL_NATIVE: return a.as.index == b.as.index;
     case VAL_BUF:
     case VAL_ARR:
+    case VAL_STRUCT:
         return a.as.ref.handle == b.as.ref.handle && a.as.ref.gen == b.as.ref.gen;
     case VAL_STR: {
         const char *sa, *sb;
@@ -660,6 +691,36 @@ static void trace_stack(JlVM *vm) {
 /* ------------------------------------------------------------------ */
 
 /* Runs until the call at depth `base` returns. */
+/* The field called strs[name] of struct s. */
+static bool struct_field(JlVM *vm, Value s, uint16_t name, Value **field) {
+    const StrConst *n = &vm->prog.strs[name];
+    if (s.type != VAL_STRUCT)
+        return jl_error(vm, "can't read .%.*s of %s, only of a struct", (int)n->len, n->chars, value_type_name(s));
+    Value *items;
+    uint32_t len;
+    if (heap_get(&vm->heap, s.as.ref, (uint8_t **)(void *)&items, &len) != HEAP_OK)
+        return vm_freed_error(vm, s.as.ref, "struct");
+    const StructDef *d = &vm->prog.structs[s.tag];
+    for (int i = 0; i < d->field_count; i++) {
+        if (d->fields[i] == name) {
+            *field = &items[i];
+            return true;
+        }
+    }
+    char list[256];
+    size_t at = 0;
+    list[0] = '\0';
+    for (int i = 0; i < d->field_count && at + 1 < sizeof list; i++) {
+        const StrConst *f = &vm->prog.strs[d->fields[i]];
+        int w = snprintf(list + at, sizeof list - at, "%s%.*s", i ? ", " : "", (int)f->len, f->chars);
+        if (w < 0) break;
+        at += (size_t)w;
+    }
+    const StrConst *sn = &vm->prog.strs[d->name];
+    return jl_error(vm, "%.*s has no field '%.*s' (its fields are %s)", (int)sn->len, sn->chars, (int)n->len, n->chars,
+                    list);
+}
+
 static JlResult run(JlVM *vm, int base) {
     CallFrame *frame = &vm->frames[vm->frame_count - 1];
 
@@ -1008,6 +1069,50 @@ static JlResult run(JlVM *vm, int base) {
             break;
         }
 
+        case OP_DUP: {
+            Value v = PEEK(0);
+            PUSH(v);
+            break;
+        }
+
+        case OP_STRUCT: {
+            uint16_t type = READ_U16();
+            const StructDef *d = &vm->prog.structs[type];
+            HeapRef ref;
+            uint8_t *data;
+            if (!new_block(vm, d->field_count * (uint32_t)sizeof(Value), BLOCK_STRUCT, &ref, &data)) goto error;
+            vm->heap.handles[ref.handle].tag = type;
+            for (int i = 0; i < d->field_count; i++) ((Value *)(void *)data)[i] = int_val(0);
+            PUSH(struct_val(ref, type));
+            break;
+        }
+
+        case OP_INIT_FIELD: {
+            uint8_t slot = READ_BYTE();
+            Value v = POP();
+            Value *items;
+            uint32_t n;
+            if (heap_get(&vm->heap, PEEK(0).as.ref, (uint8_t **)(void *)&items, &n) != HEAP_OK) {
+                vm_freed_error(vm, PEEK(0).as.ref, "struct");
+                goto error;
+            }
+            items[slot] = v;
+            break;
+        }
+
+        case OP_GET_FIELD:
+        case OP_SET_FIELD: {
+            uint16_t name = READ_U16();
+            bool set = op == OP_SET_FIELD;
+            Value v = set ? POP() : nil_val();
+            Value s = POP();
+            Value *field = NULL;
+            if (!struct_field(vm, s, name, &field)) goto error;
+            if (set) *field = v;
+            PUSH(set ? v : *field);
+            break;
+        }
+
         case OP_TIMER: {
             bool repeat = READ_BYTE() != 0;
             Value fn = POP(), interval = POP();
@@ -1195,14 +1300,14 @@ JlResult jl_disassemble_or_check(JlVM *vm, const char *source, bool print) {
 
 /* Marks the block v refers to, and everything an array holds, as reachable. */
 static void mark(JlVM *vm, Value v, uint8_t *seen) {
-    if ((v.type != VAL_BUF && v.type != VAL_ARR && !(v.type == VAL_STR && v.on_heap)) ||
+    if ((v.type != VAL_BUF && v.type != VAL_ARR && v.type != VAL_STRUCT && !(v.type == VAL_STR && v.on_heap)) ||
         v.as.ref.handle >= vm->heap.handle_cap || seen[v.as.ref.handle])
         return;
     uint8_t *data;
     uint32_t len;
     if (heap_get(&vm->heap, v.as.ref, &data, &len) != HEAP_OK) return;
     seen[v.as.ref.handle] = 1;
-    if (v.type == VAL_ARR)
+    if (v.type == VAL_ARR || v.type == VAL_STRUCT)
         for (uint32_t i = 0; i < len / (uint32_t)sizeof(Value); i++) mark(vm, ((Value *)(void *)data)[i], seen);
 }
 
@@ -1231,7 +1336,7 @@ int jl_report_leaks(JlVM *vm) {
     }
     free(seen);
     if (leaks > 0) {
-        vm_errf(vm, "hint: free() memory from alloc(), arrays and built strings once you're done with it. "
+        vm_errf(vm, "hint: free() memory from alloc(), arrays, structs and built strings once you're done with it. "
                     "Memory a global variable still holds at the end is fine, but on a device that runs for "
                     "days, a leak eventually uses up all memory.\n");
     }
