@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Ask a question or show what you built
+    url: https://github.com/jafarnz/JLang/discussions
+    about: Questions, ideas still taking shape and projects belong in Discussions.
+  - name: Read the docs
+    url: https://jafarniaz.com/jlang/docs
+    about: The documentation and playground.

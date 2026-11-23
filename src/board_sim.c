@@ -16,6 +16,9 @@
 #include <time.h>
 
 #include "board_sim.h"
+#ifndef JL_NO_REALTIME
+#include "port.h"
+#endif
 #include "hw.h"
 #include "rv.h"
 
@@ -61,12 +64,7 @@ void board_sim_default_options(BoardSimOptions *o) {
 static void advance_time(uint32_t ms) {
     sim.now_ms += ms;
 #ifndef JL_NO_REALTIME
-    if (sim.opt.realtime && ms > 0) {
-        struct timespec ts;
-        ts.tv_sec = (time_t)(ms / 1000);
-        ts.tv_nsec = (long)(ms % 1000) * 1000000L;
-        nanosleep(&ts, NULL);
-    }
+    if (sim.opt.realtime && ms > 0) jl_sleep_ms(ms);
 #endif
 }
 

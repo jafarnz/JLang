@@ -1,0 +1,19 @@
+name: An idea
+description: A feature, a built-in, a simulated part, an example or a docs page you'd like.
+labels: [idea]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you'd like to do
+      description: Describe the problem or project first, then the feature that would help. A short example of how it would look in JLang helps a lot.
+    validations:
+      required: true
+  - type: dropdown
+    id: help
+    attributes:
+      label: Would you like to build it?
+      options:
+        - Yes, with some pointers
+        - Maybe
+        - No, just suggesting it

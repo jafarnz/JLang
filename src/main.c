@@ -14,8 +14,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
+
+#include "port.h"
 
 #include "board_sim.h"
 #include "jlang.h"
@@ -284,7 +284,7 @@ static JlVM *make_vm(const Options *o) {
         return NULL;
     }
     BoardSimOptions board = o->board;
-    board.ansi_frames = board.realtime && isatty(STDOUT_FILENO);
+    board.ansi_frames = board.realtime && jl_isatty_stdout();
     board_sim_register(vm, &board);
     return vm;
 }
@@ -433,7 +433,7 @@ static int native(const Options *o, bool emulate) {
             run.err = write_stderr;
             run.panel_w = o->board.panel_w;
             run.panel_h = o->board.panel_h;
-            run.ansi_frames = o->board.realtime && isatty(STDOUT_FILENO);
+            run.ansi_frames = o->board.realtime && jl_isatty_stdout();
             run.vcd = o->vcd_path ? vcd_new() : NULL;
             RvPipe *pipe = NULL;
             if (o->pipeline_on) {
@@ -491,7 +491,11 @@ static int svd_command(const Options *o) {
     }
     char *list[64];
     int n = 0;
-    char *only = o->only ? strdup(o->only) : NULL;
+    char *only = NULL;
+    if (o->only) { /* strdup isn't in C99 */
+        only = malloc(strlen(o->only) + 1);
+        if (only) strcpy(only, o->only);
+    }
     for (char *tok = only ? strtok(only, ",") : NULL; tok && n < 64; tok = strtok(NULL, ",")) list[n++] = tok;
     FILE *out = o->out_path ? fopen(o->out_path, "w") : stdout;
     if (out == NULL) {
@@ -693,7 +697,7 @@ static int new_project(const char *name) {
         fprintf(stderr, "usage: jlang new <name>\n");
         return EXIT_USAGE;
     }
-    if (mkdir(name, 0755) != 0) {
+    if (jl_mkdir(name) != 0) {
         fprintf(stderr, "jlang: can't create folder '%s': %s\n", name, strerror(errno));
         return EXIT_USAGE;
     }

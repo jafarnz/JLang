@@ -14,6 +14,14 @@ jobs:
       - run: make test
       - run: make sanitize
 
+  # The Windows build, cross-compiled with MinGW, and the npm package.
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y gcc-mingw-w64-x86-64
+      - run: make CC=x86_64-w64-mingw32-gcc BIN=build/jlang.exe CFLAGS="-std=c99 -O2 -Wall -Werror -D__USE_MINGW_ANSI_STDIO=1" LDFLAGS=-static
+
   # Build the ESP32 firmware: the VM for the ESP32-S3 (Xtensa), native
   # RISC-V code for the ESP32-C6, and Glass.
   firmware:

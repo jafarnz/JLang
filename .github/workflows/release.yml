@@ -1,0 +1,119 @@
+# Pushing a tag like v0.2.0 builds jlang for Linux, macOS and Windows,
+# attaches the archives and their checksums to a GitHub release, and
+# publishes the npm package if the NPM_TOKEN secret is set, and updates
+# the Homebrew tap if the HOMEBREW_TAP_TOKEN secret is set.
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: linux-x86_64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: macos-latest, target: macos-arm64 }
+          - { os: macos-13, target: macos-x86_64 }
+          - { os: ubuntu-latest, target: windows-x86_64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == windows-* ]]; then
+            sudo apt-get install -y gcc-mingw-w64-x86-64
+            make CC=x86_64-w64-mingw32-gcc BIN=build/jlang.exe CFLAGS="-std=c99 -O2 -Wall -D__USE_MINGW_ANSI_STDIO=1" LDFLAGS=-static
+          elif [[ "${{ matrix.target }}" == linux-* ]]; then
+            make LDFLAGS=-static
+            make test
+          else
+            make
+            make test
+          fi
+      - name: Package
+        shell: bash
+        run: |
+          name="jlang-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp build/jlang* "dist/$name/" 2>/dev/null || true
+          rm -f "dist/$name/"*.wasm "dist/$name/jlang-san"
+          cp -r LICENSE README.md examples "dist/$name/"
+          cd dist
+          if [[ "${{ matrix.target }}" == windows-* ]]; then
+            zip -qr "$name.zip" "$name"
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/jlang-*.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum jlang-* > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  # Updates the Homebrew tap (github.com/jafarnz/homebrew-tap) when the
+  # HOMEBREW_TAP_TOKEN secret, a token that can push to it, is set.
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update the formula
+        if: ${{ env.TOKEN != '' }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sha=$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" | sha256sum | cut -d' ' -f1)
+          git clone "https://x-access-token:${TOKEN}@github.com/jafarnz/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          sed -e "s/@VERSION@/$version/" -e "s/@SHA256@/$sha/" packaging/homebrew/jlang.rb > tap/Formula/jlang.rb
+          cd tap
+          git config user.name "jlang release"
+          git config user.email "actions@users.noreply.github.com"
+          git add Formula/jlang.rb
+          git commit -m "jlang $version"
+          git push
+
+  npm:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Build the WebAssembly package
+        run: |
+          sudo apt-get install -y clang lld wasi-libc
+          make wasm WASI_SYSROOT=/usr
+          ./packaging/npm/build.sh "${GITHUB_REF_NAME#v}"
+      - name: Publish
+        if: ${{ env.NPM_TOKEN != '' }}
+        run: cd build/npm && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

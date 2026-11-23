@@ -22,18 +22,33 @@ Integers are 32 bits and overflow like a CPU register, and bits are read and wri
 
 The [documentation and playground](https://jafarniaz.com/jlang) run JLang in the browser, compiled to WebAssembly, with a step debugger, a waveform view and running programs on a board over USB.
 
-## Trying it
+## Installing
 
-JLang needs only a C compiler and `make`, and runs from the build folder:
+On macOS or Linux:
 
 ```bash
-git clone https://github.com/jafarnz/JLang
-cd JLang
-make
-./build/jlang run examples/scroll.jlang --realtime
+curl -fsSL https://jafarniaz.com/jlang/install.sh | sh
 ```
 
-`make install` copies `build/jlang` to `/usr/local/bin` if you want it on your `PATH`. `./build/jlang new blinky` creates a project, `check` compiles a file without running it, `xray` prints each bytecode instruction and the value stack as it runs, `dis` prints the bytecode, `repl` starts an interactive prompt, and `help` lists everything.
+The script downloads a prebuilt `jlang` for your computer into `~/.local/bin`, without `sudo`, or builds it from source if there isn't one. The other ways:
+
+| | |
+|---|---|
+| Homebrew | `brew install jafarnz/tap/jlang` |
+| npm, on any OS with Node 18 | `npx jlang-cli run hello.jlang`, or `npm install -g jlang-cli` for a `jlang` command |
+| Windows | `jlang-windows-x86_64.zip` from the [releases](https://github.com/jafarnz/JLang/releases), or the npm package |
+| From source | `git clone https://github.com/jafarnz/JLang && cd JLang && make`, then `./build/jlang` (`make install` puts it on your `PATH`) |
+| No install | the [playground](https://jafarniaz.com/jlang/playground) runs everything in the browser |
+
+Then:
+
+```bash
+jlang new blinky
+cd blinky
+jlang run main.jlang --emit button
+```
+
+`jlang check` compiles a file without running it, `xray` prints each bytecode instruction and the value stack as it runs, `dis` prints the bytecode, `repl` starts an interactive prompt, and `help` lists everything.
 
 ## Compiling to RISC-V
 
@@ -65,6 +80,12 @@ make test        # run the tests (RISC-V checks need binutils/gcc-riscv64-unknow
 make sanitize    # run the tests with AddressSanitizer and UBSan
 make wasm        # build build/jlang.wasm (needs clang and wasi-libc)
 ```
+
+## Contributing
+
+JLang is built to be the language people reach for when they move from software to hardware, and it gets there with help from the people learning it. You don't need a computer engineering background: examples, clearer error messages, simulated parts and docs are all valuable, and the whole implementation is small enough to read. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to build, test and make a first change, and [ROADMAP.md](ROADMAP.md) lists work to pick up, with the small items marked.
+
+Questions, ideas and projects go in [Discussions](https://github.com/jafarnz/JLang/discussions), and bugs in [Issues](https://github.com/jafarnz/JLang/issues). Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

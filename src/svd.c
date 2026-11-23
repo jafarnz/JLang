@@ -17,13 +17,13 @@
  */
 #define _POSIX_C_SOURCE 200809L
 #include "svd.h"
+#include "port.h"
 
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <strings.h>
 
 /* ---- a small XML reader, enough for SVD ---------------------------------- */
 
@@ -192,9 +192,9 @@ static bool wanted(const Gen *g, const char *periph, const char *reg) {
         const char *o = g->only[i];
         const char *dot = strchr(o, '.');
         size_t plen = dot ? (size_t)(dot - o) : strlen(o);
-        if (strlen(periph) != plen || strncasecmp(periph, o, plen) != 0) continue;
+        if (strlen(periph) != plen || jl_strncasecmp(periph, o, plen) != 0) continue;
         if (!dot || !reg) return true;
-        if (strcasecmp(reg, dot + 1) == 0) return true;
+        if (jl_strncasecmp(reg, dot + 1, strlen(reg) + 1) == 0) return true;
     }
     return false;
 }

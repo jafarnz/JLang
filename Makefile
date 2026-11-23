@@ -12,7 +12,7 @@ all: $(BIN)
 
 $(BIN): $(SRC) $(HDR)
 	@mkdir -p build
-	$(CC) $(CFLAGS) -o $@ $(SRC)
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 test: $(BIN) build/glass_sim
 	@./tests/run.sh $(BIN)
