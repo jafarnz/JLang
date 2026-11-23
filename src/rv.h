@@ -83,10 +83,27 @@ typedef struct {
     void *frame_data;
     uint32_t max_ms;         /* stop once this much time has passed, 0 = never */
     struct Vcd *vcd;         /* record pin changes for a waveform viewer, or NULL */
+    /* Called after every instruction, for the pipeline view. */
+    void (*trace)(void *trace_ud, uint32_t pc, uint32_t insn, uint32_t next_pc);
+    void *trace_ud;
 } RvRunOptions;
 
 /* Runs an assembled image from symbol `_start`. Returns the exit code
  * written to RV_EXIT, or 70 after a fault (reported through err). */
 int rv_run(const RvImage *img, const RvRunOptions *opt, uint64_t *cycles_out);
+
+/* ---- pipeline view (rv_pipe.c) ----------------------------------------- */
+
+/* Writes one RV32IM instruction as assembly, like "addi sp, sp, -16". */
+void rv_disasm(uint32_t insn, uint32_t pc, char *out, size_t size);
+
+/* A classic 5-stage pipeline (fetch, decode, execute, memory, write back)
+ * with forwarding, fed with the instructions a program really ran. */
+typedef struct RvPipe RvPipe;
+/* The diagram starts at the first instruction of the program's own code. */
+RvPipe *rv_pipe_new(const RvImage *img, int diagram_rows);
+void rv_pipe_free(RvPipe *p);
+void rv_pipe_step(void *pipe, uint32_t pc, uint32_t insn, uint32_t next_pc);
+void rv_pipe_report(const RvPipe *p, const RvImage *img, RvWriteFn out, void *ud);
 
 #endif

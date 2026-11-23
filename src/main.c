@@ -43,6 +43,8 @@ typedef struct {
     bool print_asm;
     const char *bin_path;
     const char *vcd_path;
+    bool pipeline_on;       /* jlang emu --pipeline */
+    int pipeline_rows;      /* rows of its diagram */
     int run_for_s;          /* how long timers run, 0 = the default */
     const char *emits[MAX_EMITS];
     int emit_count;
@@ -86,6 +88,9 @@ static void usage(FILE *f) {
         "options for emu / build:\n"
         "  --emit, --pin, --max-cycles,  as for run (emu only)\n"
         "  --vcd\n"
+        "  --pipeline [rows]             show how a 5-stage pipeline runs the code: a diagram\n"
+        "                                of the first rows instructions (default 16) and the\n"
+        "                                stalls and flushes of the whole run (emu only)\n"
         "  --asm                         print the generated assembly instead of running\n"
         "  --listing                     print addresses and machine code for every instruction\n"
         "  -o <file.s>                   where build writes the assembly\n"
@@ -151,6 +156,18 @@ static bool parse_args(int argc, char **argv, Options *o) {
                 return false;
             }
             o->run_for_s = (int)v;
+        } else if (strcmp(a, "--pipeline") == 0) {
+            o->pipeline_on = true;
+            o->pipeline_rows = 16;
+            if (has_value && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+                char *end;
+                long v = strtol(argv[++i], &end, 10);
+                if (*end != '\0' || v < 0 || v > 64) {
+                    fprintf(stderr, "jlang: --pipeline takes a number of rows from 0 to 64\n");
+                    return false;
+                }
+                o->pipeline_rows = (int)v;
+            }
         } else if (strcmp(a, "--vcd") == 0 && has_value) {
             o->vcd_path = argv[++i];
         } else if (strcmp(a, "-o") == 0 && has_value) {
@@ -393,9 +410,19 @@ static int native(const Options *o, bool emulate) {
             run.panel_h = o->board.panel_h;
             run.ansi_frames = o->board.realtime && isatty(STDOUT_FILENO);
             run.vcd = o->vcd_path ? vcd_new() : NULL;
+            RvPipe *pipe = NULL;
+            if (o->pipeline_on) {
+                pipe = rv_pipe_new(&img, o->pipeline_rows);
+                run.trace = rv_pipe_step;
+                run.trace_ud = pipe;
+            }
             uint64_t cycles = 0;
             code = rv_run(&img, &run, &cycles);
             fflush(stdout);
+            if (pipe) {
+                rv_pipe_report(pipe, &img, write_stdout, NULL);
+                rv_pipe_free(pipe);
+            }
             if (!save_vcd(o->vcd_path, run.vcd) && code == 0) code = EXIT_USAGE;
             vcd_free(run.vcd);
             if (o->stats) {

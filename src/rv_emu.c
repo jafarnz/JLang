@@ -338,7 +338,9 @@ int rv_run(const RvImage *img, const RvRunOptions *opt, uint64_t *cycles_out) {
     c.x[2] = RV_RAM_SIZE; /* stack pointer at the top of RAM */
 
     while (!c.halted) {
+        uint32_t pc = c.pc;
         step(&c);
+        if (opt->trace && !c.halted) opt->trace(opt->trace_ud, pc, load(&c, pc, 4), c.pc);
         c.cycles++;
         if (opt->max_cycles && c.cycles >= opt->max_cycles && !c.halted) {
             char buf[160];

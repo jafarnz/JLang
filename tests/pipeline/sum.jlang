@@ -1,0 +1,6 @@
+// A short loop, for the pipeline view golden test.
+let total = 0
+for i in 0..5 {
+    total += i * 3
+}
+print(total)
