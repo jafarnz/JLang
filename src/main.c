@@ -21,6 +21,7 @@
 #include "jlang.h"
 #include "rv.h"
 #include "rv_codegen.h"
+#include "svd.h"
 
 enum {
     EXIT_USAGE = 64,
@@ -45,6 +46,7 @@ typedef struct {
     const char *vcd_path;
     bool pipeline_on;       /* jlang emu --pipeline */
     bool wcet;              /* jlang wcet */
+    const char *only;       /* jlang svd --only GPIO,LEDC */
     uint32_t mhz;           /* clock speed for jlang wcet */
     int pipeline_rows;      /* rows of its diagram */
     int run_for_s;          /* how long timers run, 0 = the default */
@@ -67,6 +69,8 @@ static void usage(FILE *f) {
         "  jlang emu <file.jlang>        compile to RISC-V and run it on the built-in emulator\n"
         "  jlang build <file.jlang>      compile to RISC-V assembly for a real board (-o out.s)\n"
         "  jlang asm <file.s>            assemble RISC-V assembly and run it on the emulator\n"
+        "  jlang svd <chip.svd>          print a chip's registers as consts (--only GPIO,UART0.FIFO\n"
+        "                                keeps some, -o file.jlang writes them to a file)\n"
         "  jlang wcet <file.jlang>       the most time the script and each handler can take\n"
         "                                (--mhz <n> sets the clock, default 160)\n"
         "  jlang version\n"
@@ -161,6 +165,8 @@ static bool parse_args(int argc, char **argv, Options *o) {
                 return false;
             }
             o->run_for_s = (int)v;
+        } else if (strcmp(a, "--only") == 0 && has_value) {
+            o->only = argv[++i];
         } else if (strcmp(a, "--mhz") == 0 && has_value) {
             char *end;
             long v = strtol(argv[++i], &end, 10);
@@ -476,6 +482,34 @@ static int native(const Options *o, bool emulate) {
     return code;
 }
 
+/* jlang svd chip.svd [--only GPIO,LEDC] [-o regs.jlang] */
+static int svd_command(const Options *o) {
+    char *xml = read_file(o->file);
+    if (xml == NULL) {
+        fprintf(stderr, "jlang: can't read '%s': %s\n", o->file, strerror(errno));
+        return EXIT_NOFILE;
+    }
+    char *list[64];
+    int n = 0;
+    char *only = o->only ? strdup(o->only) : NULL;
+    for (char *tok = only ? strtok(only, ",") : NULL; tok && n < 64; tok = strtok(NULL, ",")) list[n++] = tok;
+    FILE *out = o->out_path ? fopen(o->out_path, "w") : stdout;
+    if (out == NULL) {
+        fprintf(stderr, "jlang: can't write '%s': %s\n", o->out_path, strerror(errno));
+        free(xml);
+        free(only);
+        return EXIT_USAGE;
+    }
+    const char *base = strrchr(o->file, '/');
+    char err[256];
+    bool ok = svd_to_jlang(xml, base ? base + 1 : o->file, list, n, out, err, sizeof err);
+    if (out != stdout) fclose(out);
+    if (!ok) fprintf(stderr, "jlang: %s\n", err);
+    free(xml);
+    free(only);
+    return ok ? 0 : EXIT_USAGE;
+}
+
 /* jlang asm file.s: assemble RISC-V assembly and run it on the emulator */
 static int run_assembly(const Options *o) {
     char *src = read_file(o->file);
@@ -704,7 +738,7 @@ int main(int argc, char **argv) {
     bool known = strcmp(cmd, "run") == 0 || strcmp(cmd, "xray") == 0 ||
                  strcmp(cmd, "check") == 0 || strcmp(cmd, "dis") == 0 ||
                  strcmp(cmd, "emu") == 0 || strcmp(cmd, "build") == 0 || strcmp(cmd, "asm") == 0 ||
-                 strcmp(cmd, "wcet") == 0;
+                 strcmp(cmd, "wcet") == 0 || strcmp(cmd, "svd") == 0;
     if (!known) {
         fprintf(stderr, "jlang: unknown command '%s'\n\n", cmd);
         usage(stderr);
@@ -716,6 +750,7 @@ int main(int argc, char **argv) {
     }
     if (strcmp(cmd, "run") == 0) return run_file(&o, false);
     if (strcmp(cmd, "emu") == 0) return native(&o, true);
+    if (strcmp(cmd, "svd") == 0) return svd_command(&o);
     if (strcmp(cmd, "wcet") == 0) {
         o.wcet = true;
         return native(&o, true);

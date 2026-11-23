@@ -109,7 +109,7 @@ static TokenType keyword_or_ident(const char *s, int n) {
         {"true", TOK_TRUE},     {"false", TOK_FALSE},
         {"nil", TOK_NIL},       {"on", TOK_ON},
         {"every", TOK_EVERY},   {"after", TOK_AFTER},
-        {"struct", TOK_STRUCT},
+        {"struct", TOK_STRUCT}, {"const", TOK_CONST},
     };
     for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) {
         if ((int)strlen(keywords[i].word) == n &&

@@ -58,6 +58,7 @@ void program_free(Program *p) {
         free(p->fns[i].chunk.bounds);
     }
     free(p->fns);
+    free(p->named);
     for (int i = 0; i < p->str_count; i++) free(p->strs[i].chars);
     free(p->strs);
     memset(p, 0, sizeof *p);

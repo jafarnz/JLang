@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A tiny made-up chip covering the SVD features jlang svd reads. -->
+<device schemaVersion="1.1">
+  <name>MINI</name>
+  <peripherals>
+    <peripheral>
+      <name>GPIO</name>
+      <description>General purpose
+        input/output</description>
+      <baseAddress>0x40000000</baseAddress>
+      <registers>
+        <register>
+          <name>OUT</name>
+          <description>Output levels</description>
+          <addressOffset>0x4</addressOffset>
+          <fields>
+            <field><name>DATA</name><bitOffset>0</bitOffset><bitWidth>32</bitWidth></field>
+          </fields>
+        </register>
+        <register>
+          <dim>2</dim>
+          <dimIncrement>0x4</dimIncrement>
+          <name>PIN%s</name>
+          <description>Configuration of pin %s</description>
+          <addressOffset>0x10</addressOffset>
+          <fields>
+            <field><name>MODE</name><description>Mode of pin %s</description><bitRange>[3:1]</bitRange></field>
+            <field><name>PULLUP</name><lsb>4</lsb><msb>4</msb></field>
+          </fields>
+        </register>
+      </registers>
+    </peripheral>
+    <peripheral derivedFrom="GPIO">
+      <name>GPIO1</name>
+      <baseAddress>0x40001000</baseAddress>
+    </peripheral>
+    <peripheral>
+      <name>DMA</name>
+      <baseAddress>0x40002000</baseAddress>
+      <registers>
+        <cluster>
+          <dim>2</dim>
+          <dimIncrement>0x20</dimIncrement>
+          <name>CH[%s]</name>
+          <addressOffset>0x100</addressOffset>
+          <register>
+            <name>CTRL</name>
+            <addressOffset>0x8</addressOffset>
+            <fields>
+              <field><name>EN</name><bitOffset>0</bitOffset><bitWidth>1</bitWidth></field>
+            </fields>
+          </register>
+        </cluster>
+      </registers>
+    </peripheral>
+  </peripherals>
+</device>

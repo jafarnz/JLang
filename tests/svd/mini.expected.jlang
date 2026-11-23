@@ -1,0 +1,34 @@
+// Registers of the MINI, made by jlang svd from mini.svd.
+// Each register is an address: read it with mmio_read32(NAME) and write it with
+// mmio_write32(NAME, value). A field of bits is NAME_HI..NAME_LO, as in
+// reg[NAME_HI..NAME_LO], and a one-bit field is NAME_BIT, as in reg[NAME_BIT].
+
+// GPIO: General purpose input/output
+const GPIO_OUT = 0x40000004                 // Output levels
+const GPIO_PIN0 = 0x40000010                // Configuration of pin 0
+const GPIO_PIN0_MODE_HI = 3                 // Mode of pin 0
+const GPIO_PIN0_MODE_LO = 1
+const GPIO_PIN0_PULLUP_BIT = 4
+const GPIO_PIN1 = 0x40000014                // Configuration of pin 1
+const GPIO_PIN1_MODE_HI = 3                 // Mode of pin 1
+const GPIO_PIN1_MODE_LO = 1
+const GPIO_PIN1_PULLUP_BIT = 4
+
+// GPIO1: General purpose input/output
+const GPIO1_OUT = 0x40001004                // Output levels
+const GPIO1_PIN0 = 0x40001010               // Configuration of pin 0
+const GPIO1_PIN0_MODE_HI = 3                // Mode of pin 0
+const GPIO1_PIN0_MODE_LO = 1
+const GPIO1_PIN0_PULLUP_BIT = 4
+const GPIO1_PIN1 = 0x40001014               // Configuration of pin 1
+const GPIO1_PIN1_MODE_HI = 3                // Mode of pin 1
+const GPIO1_PIN1_MODE_LO = 1
+const GPIO1_PIN1_PULLUP_BIT = 4
+
+// DMA
+const DMA_CH0_CTRL = 0x40002108
+const DMA_CH0_CTRL_EN_BIT = 0
+const DMA_CH1_CTRL = 0x40002128
+const DMA_CH1_CTRL_EN_BIT = 0
+
+// 8 registers and 10 fields.

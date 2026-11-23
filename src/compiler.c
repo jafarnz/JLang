@@ -645,8 +645,29 @@ static void field_(Compiler *c, bool can_assign) {
     emit(c, (uint8_t)si);
 }
 
+/* The const called `name`, or -1. */
+static int find_named(Compiler *c, const char *name, int len) {
+    const Program *p = &c->vm->prog;
+    for (int i = 0; i < p->named_count; i++) {
+        const StrConst *s = &p->strs[p->named[i].name];
+        if ((int)s->len == len && memcmp(s->chars, name, (size_t)len) == 0) return i;
+    }
+    return -1;
+}
+
 static void variable(Compiler *c, bool can_assign) {
     Token name = c->prev;
+    if (resolve_local(c, &name) < 0) {
+        int k = find_named(c, name.start, name.length);
+        if (k >= 0) {
+            if (can_assign && (check(c, TOK_EQ) || is_compound(c->cur.type))) {
+                error_at_current(c, "this is a const, which can't be changed (use let for a variable)");
+                return;
+            }
+            emit_const(c, int_val(c->vm->prog.named[k].value));
+            return;
+        }
+    }
     int type = find_struct(c, name.start, name.length);
     if (type >= 0 && check(c, TOK_LBRACE)) {
         struct_literal(c, type);
@@ -1066,6 +1087,52 @@ static void block(Compiler *c) {
     consume(c, TOK_RBRACE, "expected '}' to close this block");
 }
 
+static bool at_top_level(const Compiler *c);
+
+/* const NAME = 42: a number with a name. The compiler puts the number
+   wherever the name is used, so it takes no memory, like #define in C. */
+static void const_decl(Compiler *c) {
+    if (!at_top_level(c)) error(c, "consts can only be declared at the top level of a file");
+    consume(c, TOK_IDENT, "expected a name after 'const', like: const LED = 2");
+    Token name = c->prev;
+    if (find_named(c, name.start, name.length) >= 0 || find_struct(c, name.start, name.length) >= 0) {
+        error(c, "this name is already taken");
+        return;
+    }
+    consume(c, TOK_EQ, "expected '=' and a number, like: const LED = 2");
+    bool neg = match(c, TOK_MINUS);
+    int32_t v = 0;
+    if (match(c, TOK_INT)) {
+        /* compile the number into a scratch spot, then take it back out */
+        int at = chunk(c)->count;
+        int consts = chunk(c)->const_count;
+        number(c, false);
+        if (chunk(c)->count == at + 3) {
+            v = chunk(c)->consts[(chunk(c)->code[at + 1] << 8) | chunk(c)->code[at + 2]].as.i;
+            chunk(c)->count = at;
+            chunk(c)->const_count = consts;
+        }
+    } else if (match(c, TOK_IDENT)) {
+        int k = find_named(c, c->prev.start, c->prev.length);
+        if (k < 0) {
+            error(c, "a const can only be a number or another const");
+            return;
+        }
+        v = c->vm->prog.named[k].value;
+    } else {
+        error_at_current(c, "a const must be a number, like: const LED = 2");
+        return;
+    }
+    if (neg) v = (int32_t)(0u - (uint32_t)v);
+    Program *p = &c->vm->prog;
+    if (p->named_count == p->named_cap) {
+        p->named_cap = p->named_cap ? p->named_cap * 2 : 64;
+        p->named = jl_xrealloc(p->named, (size_t)p->named_cap * sizeof *p->named);
+    }
+    p->named[p->named_count].name = (uint16_t)program_intern(p, name.start, (uint32_t)name.length);
+    p->named[p->named_count++].value = v;
+}
+
 static void let_decl(Compiler *c) {
     consume(c, TOK_IDENT, "expected a variable name after 'let'");
     Token name = c->prev;
@@ -1230,7 +1297,8 @@ static void synchronize(Compiler *c) {
     c->panic = false;
     while (!check(c, TOK_EOF)) {
         switch (c->cur.type) {
-        case TOK_LET: case TOK_FN: case TOK_ON: case TOK_EVERY: case TOK_AFTER: case TOK_STRUCT: case TOK_IF: case TOK_WHILE:
+        case TOK_LET: case TOK_FN: case TOK_ON: case TOK_EVERY: case TOK_AFTER: case TOK_STRUCT: case TOK_CONST:
+        case TOK_IF: case TOK_WHILE:
         case TOK_FOR: case TOK_RETURN: case TOK_BREAK: case TOK_CONTINUE:
         case TOK_RBRACE: /* let the enclosing block close normally */
             return;
@@ -1247,6 +1315,8 @@ static void declaration(Compiler *c) {
         fn_decl(c);
     } else if (match(c, TOK_ON)) {
         on_decl(c);
+    } else if (match(c, TOK_CONST)) {
+        const_decl(c);
     } else if (match(c, TOK_STRUCT)) {
         struct_decl(c);
     } else if (match(c, TOK_EVERY)) {

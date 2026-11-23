@@ -111,6 +111,13 @@ typedef struct {
     int str_cap;
     StructDef structs[JL_STRUCTS_MAX];
     int struct_count;
+    /* const NAME = 0x6000_4004: replaced by the number wherever it's used */
+    struct {
+        uint16_t name; /* string constant */
+        int32_t value;
+    } *named;
+    int named_count;
+    int named_cap;
 } Program;
 
 void *jl_xrealloc(void *ptr, size_t size);

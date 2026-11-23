@@ -38,5 +38,14 @@ for t in "$DIR"/tests/wcet/*.jlang; do
     "$BIN" wcet "$t" > "$TMP/$name.txt" 2>&1
     check "wcet $name" "$DIR/tests/wcet/$name.expected.txt" "$TMP/$name.txt"
 done
+for t in "$DIR"/tests/svd/*.svd; do
+    name="$(basename "$t" .svd)"
+    "$BIN" svd "$t" > "$TMP/$name.jlang" 2>&1
+    check "svd $name" "$DIR/tests/svd/$name.expected.jlang" "$TMP/$name.jlang"
+    if ! "$BIN" check "$TMP/$name.jlang" >/dev/null 2>&1; then
+        fail=$((fail + 1))
+        echo "FAIL: svd $name: the generated consts don't compile"
+    fi
+done
 echo "files: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

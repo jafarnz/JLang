@@ -1,0 +1,7 @@
+// A const cannot be changed.
+// exit: 65
+const LED = 2
+LED = 3
+// expect: error (line 4, col 5): this is a const, which can't be changed (use let for a variable)
+// expect:      4 | LED = 3
+// expect:        |     ^

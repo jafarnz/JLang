@@ -1,0 +1,15 @@
+// const: named numbers the compiler puts in place, usable in bit ranges and native code.
+const LED = 2
+const GPIO_OUT = 0x6009_1004
+const MINUS = -5
+const ALIAS = LED
+print(LED, GPIO_OUT, MINUS, ALIAS)
+fn f(LED) { return LED * 10 }
+print(f(7))
+let reg = 0b1011_0000
+const HI = 7
+const LO = 4
+print(reg[HI..LO])
+// expect: 2 1611206660 -5 2
+// expect: 70
+// expect: 11
