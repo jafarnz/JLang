@@ -43,6 +43,7 @@ typedef struct {
     bool print_asm;
     const char *bin_path;
     const char *vcd_path;
+    int run_for_s;          /* how long timers run, 0 = the default */
     const char *emits[MAX_EMITS];
     int emit_count;
     BoardSimOptions board;
@@ -76,6 +77,8 @@ static void usage(FILE *f) {
         "                                LED panel frames animate in place, in colour\n"
         "  --panel <w>x<h>               LED panel size (default 60x7)\n"
         "  --vcd <file.vcd>              record every pin as a waveform for GTKWave\n"
+        "  --for <seconds>               how long every/after timers run (default 10,\n"
+        "                                or forever with --realtime)\n"
         "  --stats                       print instruction counts and heap use\n"
         "  --no-leak-check               don't report unfreed memory at exit\n"
         "\n"
@@ -139,6 +142,14 @@ static bool parse_args(int argc, char **argv, Options *o) {
             o->print_asm = true;
         } else if (strcmp(a, "--bin") == 0 && has_value) {
             o->bin_path = argv[++i];
+        } else if (strcmp(a, "--for") == 0 && has_value) {
+            char *end;
+            long v = strtol(argv[++i], &end, 10);
+            if (*end != '\0' || v < 1 || v > 86400) {
+                fprintf(stderr, "jlang: --for must be 1 to 86400 (seconds)\n");
+                return false;
+            }
+            o->run_for_s = (int)v;
         } else if (strcmp(a, "--vcd") == 0 && has_value) {
             o->vcd_path = argv[++i];
         } else if (strcmp(a, "-o") == 0 && has_value) {
@@ -267,6 +278,12 @@ static int run_file(const Options *opts, bool xray) {
         } else if (r != JL_OK) {
             code = EXIT_RUNTIME;
         }
+    }
+
+    if (code == 0) {
+        /* Then the timers, as a board's main loop would run them. */
+        uint32_t until = o->run_for_s > 0 ? (uint32_t)o->run_for_s * 1000u : o->board.realtime ? 0 : 10000u;
+        if (board_sim_run_timers(vm, until) != JL_OK) code = EXIT_RUNTIME;
     }
 
     if (code != EXIT_COMPILE) {

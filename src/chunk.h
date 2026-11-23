@@ -54,6 +54,7 @@ typedef enum {
     OP_ADD_TEMP,      /* + where the left value is the result of the + just before
                          it: a joined string nothing else can refer to, so it is
                          freed once it has been joined again */
+    OP_TIMER,         /* u8 repeat: start a timer; pops the interval and the handler */
 
     OP_COUNT
 } OpCode;

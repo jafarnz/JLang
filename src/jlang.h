@@ -82,6 +82,22 @@ typedef struct {
 } JlStep;
 
 typedef bool (*JlStepFn)(JlVM *vm, const JlStep *step, void *user_data);
+
+/*
+ * Timers (`every 500ms { ... }` and `after 2s { ... }`). The host owns
+ * time: it gives the VM a clock, and after the script has run it waits
+ * until jl_next_timer() says a timer is due, then calls jl_run_timers().
+ */
+/* Asks a running program to stop at its next instruction; safe to call
+   from another task or an interrupt. The program ends with an error. */
+void jl_request_stop(JlVM *vm);
+
+typedef uint32_t (*JlClockFn)(void *user_data);
+void jl_set_clock(JlVM *vm, JlClockFn clock, void *user_data);
+/* True if a timer is waiting; *due is when the next one should run. */
+bool jl_next_timer(JlVM *vm, uint32_t *due);
+/* Runs every timer that is due at `now`. */
+JlResult jl_run_timers(JlVM *vm, uint32_t now);
 void jl_set_step_hook(JlVM *vm, JlStepFn fn, void *user_data);
 void jl_print_stats(JlVM *vm);
 int jl_report_leaks(JlVM *vm);

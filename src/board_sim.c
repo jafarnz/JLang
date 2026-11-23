@@ -573,6 +573,28 @@ static bool sim_mmio_write8(JlVM *vm, int argc, Value *args, Value *out) {
     return mmio_write(vm, addr, (uint32_t)v & 0xFFu);
 }
 
+static uint32_t sim_clock(void *ud) {
+    (void)ud;
+    return sim.now_ms;
+}
+
+JlResult board_sim_run_timers(JlVM *vm, uint32_t until_ms) {
+    if (sim.opt.max_ms && (until_ms == 0 || until_ms > sim.opt.max_ms)) until_ms = sim.opt.max_ms;
+    uint32_t due;
+    while (jl_next_timer(vm, &due)) {
+        if (until_ms && (int32_t)(due - until_ms) > 0) {
+            jl_outf(vm, "[sim %6ums] timers stopped after %u seconds of simulated time. On a board they would keep running\n",
+                    (unsigned)until_ms, (unsigned)(until_ms / 1000));
+            if (sim.now_ms < until_ms) advance_time(until_ms - sim.now_ms);
+            return JL_OK;
+        }
+        if ((int32_t)(due - sim.now_ms) > 0) advance_time(due - sim.now_ms);
+        JlResult r = jl_run_timers(vm, sim.now_ms);
+        if (r != JL_OK) return r;
+    }
+    return JL_OK;
+}
+
 void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     panel_free(&sim.panel);
     memset(&sim, 0, sizeof sim);
@@ -582,6 +604,7 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     sim.panel.ansi = o->ansi_frames;
     sim.panel.sink = o->frame_sink;
     sim.panel.sink_data = o->frame_data;
+    jl_set_clock(vm, sim_clock, NULL);
     jl_register_native(vm, "pin_mode", sim_pin_mode, 2);
     jl_register_native(vm, "pin_write", sim_pin_write, 2);
     jl_register_native(vm, "pin_read", sim_pin_read, 1);

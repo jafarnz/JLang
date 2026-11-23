@@ -32,4 +32,8 @@ typedef struct {
 void board_sim_default_options(BoardSimOptions *o);
 void board_sim_register(JlVM *vm, const BoardSimOptions *o);
 
+/* Runs the script's every/after timers in simulated time until none are
+   left or the clock reaches `until_ms` (0 = no limit). */
+JlResult board_sim_run_timers(JlVM *vm, uint32_t until_ms);
+
 #endif

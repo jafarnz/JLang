@@ -21,7 +21,10 @@
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "sdkconfig.h"
+#if CONFIG_JLANG_ANALOG
 #include "esp_adc/adc_oneshot.h"
+#endif
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -293,6 +296,7 @@ static bool b_pressed(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+#if CONFIG_JLANG_ANALOG
 static adc_oneshot_unit_handle_t adc_units[2];
 
 static bool b_analog(JlVM *vm, int argc, Value *args, Value *out) {
@@ -316,6 +320,12 @@ static bool b_analog(JlVM *vm, int argc, Value *args, Value *out) {
     *out = int_val(raw);
     return true;
 }
+#else
+static bool b_analog(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args, (void)out;
+    return jl_error(vm, "analog(): this firmware was built without the ADC (CONFIG_JLANG_ANALOG)");
+}
+#endif
 
 /* HC-SR04: a 10 us pulse on trig, then echo stays high for 58 us per cm. */
 static bool b_distance(JlVM *vm, int argc, Value *args, Value *out) {
@@ -436,9 +446,30 @@ static bool b_led_text(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* Turns off everything the last program left on, before the next one. */
+static bool registered; /* the tables below are set up */
+
+void hardware_reset(void) {
+    if (!registered) return;
+    for (int i = 0; i < MAX_PWM; i++) {
+        if (pwm[i].pin >= 0) ledc_stop(LEDC_LOW_SPEED_MODE, (ledc_channel_t)i, 0);
+    }
+    for (int i = 0; i < MAX_STRIPS; i++) {
+        if (strips[i].pin >= 0) {
+            led_strip_clear(strips[i].strip);
+        }
+    }
+    memset(panel, 0, sizeof panel);
+    if (panel_strip != NULL) led_strip_clear(panel_strip);
+}
+
 void hardware_register(JlVM *vm) {
-    for (int i = 0; i < MAX_PWM; i++) pwm[i].pin = -1;
-    for (int i = 0; i < MAX_STRIPS; i++) strips[i].pin = -1;
+    /* The channels and strips outlive each program, so set them up once. */
+    if (!registered) {
+        for (int i = 0; i < MAX_PWM; i++) pwm[i].pin = -1;
+        for (int i = 0; i < MAX_STRIPS; i++) strips[i].pin = -1;
+        registered = true;
+    }
     jl_register_native(vm, "turn_on", b_turn_on, 1);
     jl_register_native(vm, "turn_off", b_turn_off, 1);
     jl_register_native(vm, "toggle", b_toggle, 1);

@@ -51,6 +51,7 @@ static const char *const names[OP_COUNT] = {
     [OP_ON] = "ON",
     [OP_ARRAY] = "ARRAY",
     [OP_ADD_TEMP] = "ADD_TEMP",
+    [OP_TIMER] = "TIMER",
 };
 
 const char *opcode_name(uint8_t op) {
@@ -98,6 +99,9 @@ int disassemble_instruction(JlVM *vm, int fn, int offset) {
         return offset + 2;
     case OP_CALL:
         jl_outf(vm, "%-14s %5u   (args)\n", name, ch->code[offset + 1]);
+        return offset + 2;
+    case OP_TIMER:
+        jl_outf(vm, "%-14s %5u   (%s)\n", name, ch->code[offset + 1], ch->code[offset + 1] ? "every" : "after");
         return offset + 2;
     case OP_GET_GLOBAL:
     case OP_SET_GLOBAL:

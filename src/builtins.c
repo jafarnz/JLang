@@ -467,6 +467,13 @@ static bool bi_map(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* stop_timer(): stops the every block it is called from. */
+static bool bi_stop_timer(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args, (void)out;
+    if (!vm_stop_current_timer(vm)) return jl_error(vm, "stop_timer() only works inside an every or after block");
+    return true;
+}
+
 /* clamp(v, lo, hi): v, kept between lo and hi. */
 static bool bi_clamp(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
@@ -538,6 +545,7 @@ void jl_register_core(JlVM *vm) {
     jl_register_native(vm, "random", bi_random, 2);
     jl_register_native(vm, "map", bi_map, 5);
     jl_register_native(vm, "clamp", bi_clamp, 3);
+    jl_register_native(vm, "stop_timer", bi_stop_timer, 0);
     jl_register_native(vm, "rgb", bi_rgb, 3);
     jl_register_native(vm, "array", bi_array, -1);
 }

@@ -37,6 +37,15 @@ typedef struct {
     Value fn;
 } EventHandler;
 
+/* An `every` or `after` block waiting to run. */
+typedef struct {
+    Value fn;
+    uint32_t interval; /* ms */
+    uint32_t due;      /* time it runs next, from the host's clock */
+    bool repeat;       /* every (true) or after (false) */
+    bool active;
+} Timer;
+
 struct JlVM {
     Program prog;
 
@@ -51,6 +60,11 @@ struct JlVM {
     int native_count;
     EventHandler events[JL_EVENTS_MAX];
     int event_count;
+    Timer timers[JL_TIMERS_MAX];
+    int timer_count;
+    int current_timer;  /* the timer whose code is running, or -1 */
+    JlClockFn clock;    /* the host's time in ms, for timers */
+    void *clock_ud;
 
     Heap heap;
 
@@ -70,6 +84,7 @@ struct JlVM {
     bool error_reported;
     char errmsg[512];
 
+    volatile bool stop_requested;  /* set by jl_request_stop() */
     uint64_t cycles;               /* instructions executed */
     uint32_t rng;                  /* random() state, xorshift32 */
     uint64_t max_cycles;           /* 0 = no limit */
@@ -87,5 +102,6 @@ bool vm_capture_end(JlVM *vm, Value *out);
 void vm_print_value(JlVM *vm, Value v, bool to_err);
 int vm_current_line(JlVM *vm);
 bool vm_freed_error(JlVM *vm, HeapRef ref, const char *what);
+bool vm_stop_current_timer(JlVM *vm);
 
 #endif

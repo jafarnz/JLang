@@ -39,6 +39,11 @@
 #define JL_EVENTS_MAX 16
 #endif
 
+/* Maximum number of `every` and `after` timers. */
+#ifndef JL_TIMERS_MAX
+#define JL_TIMERS_MAX 16
+#endif
+
 /* Maximum number of built-in (native C) functions. */
 #ifndef JL_NATIVES_MAX
 #define JL_NATIVES_MAX 64

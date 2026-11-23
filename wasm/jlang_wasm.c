@@ -22,6 +22,7 @@
    width and height (u16 each), then width * height pixels as R, G, B bytes. */
 #define FRAMES_MAX (24u * 1024u * 1024u)
 #define SIM_SECONDS 60
+#define TIMER_SECONDS 20
 static uint8_t *frames;
 static size_t frames_len, frames_cap;
 
@@ -281,6 +282,9 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
         }
         p = nl ? nl + 1 : NULL;
     }
+
+    /* every and after blocks, for up to TIMER_SECONDS of simulated time. */
+    if (code == 0 && board_sim_run_timers(vm, TIMER_SECONDS * 1000) != JL_OK) code = 70;
 
     if (code != 65) {
         if (stats) jl_print_stats(vm);

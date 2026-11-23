@@ -1,0 +1,10 @@
+menu "JLang"
+
+config JLANG_ANALOG
+    bool "Include analog() (the ADC)"
+    default y
+    help
+        Turn this off to run the firmware in QEMU, which can't emulate the
+        ADC's start-up calibration and stops there.
+
+endmenu

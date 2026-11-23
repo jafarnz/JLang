@@ -1,0 +1,7 @@
+// A timer needs a time of at least 1ms.
+// exit: 70
+every 0ms {
+    print("never")
+}
+// expect: runtime error (line 3): every needs a time of at least 1ms, got 0
+// expect:   in top-level code, line 3

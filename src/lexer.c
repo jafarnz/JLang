@@ -108,6 +108,7 @@ static TokenType keyword_or_ident(const char *s, int n) {
         {"break", TOK_BREAK},   {"continue", TOK_CONTINUE},
         {"true", TOK_TRUE},     {"false", TOK_FALSE},
         {"nil", TOK_NIL},       {"on", TOK_ON},
+        {"every", TOK_EVERY},   {"after", TOK_AFTER},
     };
     for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) {
         if ((int)strlen(keywords[i].word) == n &&
@@ -137,10 +138,18 @@ static Token number(Lexer *lx, char first) {
         while (peek(lx) == '0' || peek(lx) == '1' || peek(lx) == '_') advance(lx);
     } else {
         while (isdigit((unsigned char)peek(lx)) || peek(lx) == '_') advance(lx);
+        /* A time: 500ms or 2s. The compiler turns it into milliseconds. */
+        const char *u = lx->cur;
+        int ulen = 0;
+        while (is_ident_char(u[ulen])) ulen++;
+        if ((ulen == 2 && u[0] == 'm' && u[1] == 's') || (ulen == 1 && u[0] == 's')) {
+            lx->cur += ulen;
+            return make_token(lx, TOK_INT);
+        }
     }
     if (is_ident_char(peek(lx))) {
         while (is_ident_char(peek(lx))) advance(lx);
-        return error_token(lx, "invalid number literal");
+        return error_token(lx, "invalid number literal (times are written 500ms or 2s)");
     }
     return make_token(lx, TOK_INT);
 }

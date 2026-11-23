@@ -520,7 +520,7 @@ static int op_size(uint8_t op) {
     switch (op) {
     case OP_CONST: case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_LOOP: case OP_ARRAY: return 3;
     case OP_GET_LOCAL: case OP_SET_LOCAL: case OP_GET_GLOBAL: case OP_SET_GLOBAL:
-    case OP_DEF_GLOBAL: case OP_CALL: return 2;
+    case OP_DEF_GLOBAL: case OP_CALL: case OP_TIMER: return 2;
     default: return 1;
     }
 }
@@ -868,6 +868,10 @@ static void gen_function(Gen *g, int fi) {
         case OP_ON:
             out(g, "    addi s1, s1, -8\n");
             pop_kinds(g, 2);
+            break;
+        case OP_TIMER:
+            error(g, "every and after blocks aren't available in native code yet; "
+                     "run it with `jlang run` instead");
             break;
         case OP_ARRAY:
             error(g, "arrays aren't available in native code yet (native programs have no heap); "

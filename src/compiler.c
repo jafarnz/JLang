@@ -415,6 +415,14 @@ static void number(Compiler *c, bool can_assign) {
     const char *s = c->prev.start;
     int n = c->prev.length;
     int base = 10, i = 0;
+    /* Times: 500ms is 500 and 2s is 2000, both in milliseconds. */
+    uint64_t scale = 1;
+    if (n > 2 && s[n - 2] == 'm' && s[n - 1] == 's') {
+        n -= 2;
+    } else if (n > 1 && s[n - 1] == 's') {
+        n -= 1;
+        scale = 1000;
+    }
     if (n > 1 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
         base = 16;
         i = 2;
@@ -430,7 +438,7 @@ static void number(Compiler *c, bool can_assign) {
                                              : tolower((unsigned char)s[i]) - 'a' + 10;
         v = v * (uint64_t)base + (uint64_t)d;
         digits++;
-        if (v > 0xFFFFFFFFu) {
+        if (v * scale > 0xFFFFFFFFu) {
             error(c, "number is too big for 32 bits (the max is 4294967295, or 0xFFFFFFFF)");
             return;
         }
@@ -441,7 +449,7 @@ static void number(Compiler *c, bool can_assign) {
     }
     /* Literals above 2147483647 wrap to negative, exactly like storing a
      * 32-bit pattern in a signed register. Handy for masks: 0xFFFFFFFF. */
-    emit_const(c, int_val((int32_t)(uint32_t)v));
+    emit_const(c, int_val((int32_t)(uint32_t)(v * scale)));
 }
 
 /* Decodes \n \t \r \0 \\ \" \' \xHH. Returns the new length or -1. */
@@ -1007,11 +1015,32 @@ static void on_decl(Compiler *c) {
     emit(c, OP_ON);
 }
 
+/* every 500ms { ... } and after 2s { ... }: run code later, on a timer.
+   The program's top level finishes first; then the board runs the timers. */
+static void timer_decl(Compiler *c, bool repeat) {
+    const char *kw = repeat ? "every" : "after";
+    if (!at_top_level(c)) error(c, "timers can only be declared at the top level of a file");
+    int line = c->prev.line;
+    if (check(c, TOK_LBRACE)) {
+        error_at_current(c, repeat ? "say how often, like: every 500ms { ... }" : "say how long to wait, like: after 2s { ... }");
+        return;
+    }
+    expression(c);
+    char name[40];
+    snprintf(name, sizeof name, "%s (line %d)", kw, line);
+    int fi = compile_function(c, name, (int)strlen(name), false);
+    if (fi < 0) return;
+    emit_const(c, fn_val((uint16_t)fi));
+    /* Errors about the timer point at its first line, not its closing brace. */
+    chunk_write(chunk(c), OP_TIMER, line);
+    chunk_write(chunk(c), repeat ? 1 : 0, line);
+}
+
 static void synchronize(Compiler *c) {
     c->panic = false;
     while (!check(c, TOK_EOF)) {
         switch (c->cur.type) {
-        case TOK_LET: case TOK_FN: case TOK_ON: case TOK_IF: case TOK_WHILE:
+        case TOK_LET: case TOK_FN: case TOK_ON: case TOK_EVERY: case TOK_AFTER: case TOK_IF: case TOK_WHILE:
         case TOK_FOR: case TOK_RETURN: case TOK_BREAK: case TOK_CONTINUE:
         case TOK_RBRACE: /* let the enclosing block close normally */
             return;
@@ -1028,6 +1057,10 @@ static void declaration(Compiler *c) {
         fn_decl(c);
     } else if (match(c, TOK_ON)) {
         on_decl(c);
+    } else if (match(c, TOK_EVERY)) {
+        timer_decl(c, true);
+    } else if (match(c, TOK_AFTER)) {
+        timer_decl(c, false);
     } else {
         statement(c);
     }

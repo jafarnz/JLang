@@ -127,6 +127,7 @@ JlVM *jl_new(const JlConfig *config) {
     vm->err = config->err ? config->err : std_err;
     vm->user_data = config->user_data;
     vm->max_cycles = config->max_cycles;
+    vm->current_timer = -1;
     jl_register_core(vm);
     return vm;
 }
@@ -145,6 +146,15 @@ void *jl_user_data(JlVM *vm) { return vm->user_data; }
 void jl_set_trace(JlVM *vm, bool on) { vm->trace = on; }
 
 void jl_seed_random(JlVM *vm, uint32_t seed) { vm->rng = seed ? seed : 0x9E3779B9u; }
+
+void jl_request_stop(JlVM *vm) { vm->stop_requested = true; }
+
+void jl_set_clock(JlVM *vm, JlClockFn clock, void *user_data) {
+    vm->clock = clock;
+    vm->clock_ud = user_data;
+}
+
+static uint32_t now_ms(JlVM *vm) { return vm->clock ? vm->clock(vm->clock_ud) : 0; }
 
 void jl_set_step_hook(JlVM *vm, JlStepFn fn, void *user_data) {
     vm->step_hook = fn;
@@ -699,6 +709,10 @@ static JlResult run(JlVM *vm, int base) {
             }
         }
         uint8_t op = READ_BYTE();
+        if (vm->stop_requested) {
+            jl_error(vm, "stopped from the computer");
+            goto error;
+        }
         if (++vm->cycles > vm->max_cycles && vm->max_cycles != 0) {
             jl_error(vm, "stopped after %llu instructions. Is there a loop that "
                          "never ends?", (unsigned long long)vm->max_cycles);
@@ -994,6 +1008,39 @@ static JlResult run(JlVM *vm, int base) {
             break;
         }
 
+        case OP_TIMER: {
+            bool repeat = READ_BYTE() != 0;
+            Value fn = POP(), interval = POP();
+            const char *kw = repeat ? "every" : "after";
+            if (interval.type != VAL_INT) {
+                jl_error(vm, "%s needs a time in milliseconds, like 500ms or 2s, got %s", kw,
+                         value_type_name(interval));
+                goto error;
+            }
+            if (interval.as.i < (repeat ? 1 : 0)) {
+                jl_error(vm, "%s needs a time of at least %s, got %d", kw, repeat ? "1ms" : "0ms",
+                         (int)interval.as.i);
+                goto error;
+            }
+            int slot = -1;
+            for (int i = 0; i < vm->timer_count; i++)
+                if (!vm->timers[i].active) slot = i;
+            if (slot < 0) {
+                if (vm->timer_count == JL_TIMERS_MAX) {
+                    jl_error(vm, "too many timers (max %d)", JL_TIMERS_MAX);
+                    goto error;
+                }
+                slot = vm->timer_count++;
+            }
+            Timer *t = &vm->timers[slot];
+            t->fn = fn;
+            t->interval = (uint32_t)interval.as.i;
+            t->due = now_ms(vm) + t->interval;
+            t->repeat = repeat;
+            t->active = true;
+            break;
+        }
+
         case OP_ON: {
             Value fn = POP(), name = POP();
             const char *s = "";
@@ -1056,16 +1103,10 @@ JlResult jl_run_source(JlVM *vm, const char *source) {
     return r;
 }
 
-JlResult jl_emit(JlVM *vm, const char *event) {
+/* Calls a handler (an event or a timer) with no arguments. */
+static JlResult call_handler(JlVM *vm, Value fn) {
     bool outermost = vm->frame_count == 0;
     if (outermost) vm->error_reported = false;
-
-    EventHandler *h = NULL;
-    for (int i = 0; i < vm->event_count; i++) {
-        if (strcmp(vm->events[i].name, event) == 0) h = &vm->events[i];
-    }
-    if (h == NULL) return JL_NO_HANDLER;
-
     Value *saved = vm->sp;
     int base = vm->frame_count;
     if (vm->sp >= vm->stack + JL_STACK_MAX) {
@@ -1073,8 +1114,8 @@ JlResult jl_emit(JlVM *vm, const char *event) {
         report_error(vm);
         return JL_RUNTIME_ERROR;
     }
-    *vm->sp++ = h->fn;
-    if (!call_value(vm, h->fn, 0)) {
+    *vm->sp++ = fn;
+    if (!call_value(vm, fn, 0)) {
         report_error(vm);
         if (outermost) reset_stack(vm);
         return JL_RUNTIME_ERROR;
@@ -1086,6 +1127,60 @@ JlResult jl_emit(JlVM *vm, const char *event) {
     }
     vm->sp = saved;
     return JL_OK;
+}
+
+JlResult jl_emit(JlVM *vm, const char *event) {
+    for (int i = 0; i < vm->event_count; i++) {
+        if (strcmp(vm->events[i].name, event) == 0) return call_handler(vm, vm->events[i].fn);
+    }
+    return JL_NO_HANDLER;
+}
+
+bool jl_next_timer(JlVM *vm, uint32_t *due) {
+    bool any = false;
+    for (int i = 0; i < vm->timer_count; i++) {
+        const Timer *t = &vm->timers[i];
+        if (t->active && (!any || (int32_t)(t->due - *due) < 0)) {
+            *due = t->due;
+            any = true;
+        }
+    }
+    return any;
+}
+
+JlResult jl_run_timers(JlVM *vm, uint32_t now) {
+    /* Earliest first, so two timers due together run in a fixed order. */
+    for (;;) {
+        int next = -1;
+        for (int i = 0; i < vm->timer_count; i++) {
+            const Timer *t = &vm->timers[i];
+            if (t->active && (int32_t)(now - t->due) >= 0 &&
+                (next < 0 || (int32_t)(t->due - vm->timers[next].due) < 0))
+                next = i;
+        }
+        if (next < 0) return JL_OK;
+        Timer *t = &vm->timers[next];
+        if (t->repeat) {
+            /* Keep the beat: the next run is one interval after this one
+               was due, unless the code ran so long that it's already late. */
+            t->due += t->interval;
+            if ((int32_t)(now - t->due) >= 0) t->due = now + t->interval;
+        } else {
+            t->active = false;
+        }
+        int saved = vm->current_timer;
+        vm->current_timer = next;
+        JlResult r = call_handler(vm, t->fn);
+        vm->current_timer = saved;
+        if (r != JL_OK) return r;
+    }
+}
+
+/* stop_timer(): inside an every block, stops that timer. */
+bool vm_stop_current_timer(JlVM *vm) {
+    if (vm->current_timer < 0) return false;
+    vm->timers[vm->current_timer].active = false;
+    return true;
 }
 
 JlResult jl_disassemble_or_check(JlVM *vm, const char *source, bool print) {

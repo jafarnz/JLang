@@ -1,0 +1,35 @@
+// every and after blocks, stop_timer() and time literals.
+// args: --for 5
+let LED = 2
+let ticks = 0
+
+every 500ms {
+    toggle(LED)
+    ticks += 1
+    if ticks == 6 {
+        stop_timer()
+        print("blinked", ticks, "times")
+    }
+}
+
+every 2s {
+    print("heartbeat at", millis(), "ms")
+}
+
+after 1500ms {
+    print("one and a half seconds in")
+}
+
+print("set up, now the timers run")
+// expect: set up, now the timers run
+// expect: [sim    500ms] pin 2 -> HIGH
+// expect: [sim   1000ms] pin 2 -> LOW
+// expect: [sim   1500ms] pin 2 -> HIGH
+// expect: one and a half seconds in
+// expect: [sim   2000ms] pin 2 -> LOW
+// expect: heartbeat at 2000 ms
+// expect: [sim   2500ms] pin 2 -> HIGH
+// expect: [sim   3000ms] pin 2 -> LOW
+// expect: blinked 6 times
+// expect: heartbeat at 4000 ms
+// expect: [sim   5000ms] timers stopped after 5 seconds of simulated time. On a board they would keep running
