@@ -920,19 +920,34 @@ static void while_stmt(Compiler *c) {
 }
 
 /* for i in start..end { body }   (end is exclusive) */
+/* True if the code from `at` to the end is a single int constant. */
+static bool const_int_at(Compiler *c, int at, int32_t *v) {
+    Chunk *ch = chunk(c);
+    if (ch->count != at + 3 || ch->code[at] != OP_CONST) return false;
+    Value k = ch->consts[(ch->code[at + 1] << 8) | ch->code[at + 2]];
+    if (k.type != VAL_INT) return false;
+    *v = k.as.i;
+    return true;
+}
+
 static void for_stmt(Compiler *c) {
     consume(c, TOK_IDENT, "expected a loop variable name, like: for i in 0..10");
     Token var = c->prev;
     consume(c, TOK_IN, "expected 'in' after the loop variable, like: for i in 0..10");
 
     begin_scope(c);
+    int from_at = chunk(c)->count;
     expression(c);
     declare_local(c, var);
     mark_initialized(c);
     int i_slot = c->fs->local_count - 1;
+    int32_t from, to;
+    bool known = const_int_at(c, from_at, &from);
 
     consume(c, TOK_DOTDOT, "expected '..' in the range, like: for i in 0..10");
+    int to_at = chunk(c)->count;
     expression(c);
+    known = known && const_int_at(c, to_at, &to);
     Token end_name = {TOK_IDENT, "(end)", 5, var.line, var.col};
     declare_local(c, end_name);
     mark_initialized(c);
@@ -951,7 +966,11 @@ static void for_stmt(Compiler *c) {
     int exit = emit_jump(c, OP_JUMP_IF_FALSE);
 
     c->fs->loop = &loop;
+    int body_at = chunk(c)->count;
     body(c, "expected '{' after the range");
+    /* The body runs to - from times, unless it changes the loop variable. */
+    for (int i = body_at; known && i + 1 < chunk(c)->count; i++)
+        if (chunk(c)->code[i] == OP_SET_LOCAL && chunk(c)->code[i + 1] == (uint8_t)i_slot) known = false;
 
     for (int i = 0; i < loop.continue_count; i++) patch_jump(c, loop.continues[i]);
     emit2(c, OP_GET_LOCAL, (uint8_t)i_slot);
@@ -959,6 +978,15 @@ static void for_stmt(Compiler *c) {
     emit(c, OP_ADD);
     emit2(c, OP_SET_LOCAL, (uint8_t)i_slot);
     emit(c, OP_POP);
+    if (known) {
+        Chunk *ch = chunk(c);
+        if (ch->bound_count == ch->bound_cap) {
+            ch->bound_cap = ch->bound_cap ? ch->bound_cap * 2 : 4;
+            ch->bounds = jl_xrealloc(ch->bounds, (size_t)ch->bound_cap * sizeof *ch->bounds);
+        }
+        ch->bounds[ch->bound_count].off = ch->count;
+        ch->bounds[ch->bound_count++].count = to > from ? to - from : 0;
+    }
     emit_loop(c, loop.start);
 
     patch_jump(c, exit);

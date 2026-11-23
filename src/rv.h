@@ -48,6 +48,12 @@ typedef struct {
     int line; /* JLang source line, from "# @line N" comments */
 } RvLine;
 
+/* A loop whose count is known, from "# @bound N" before its jump back. */
+typedef struct {
+    uint32_t addr; /* the jump back to the start of the loop */
+    int count;     /* how many times the loop body runs */
+} RvBound;
+
 typedef struct {
     uint8_t *image;     /* memory contents, starting at address 0 */
     uint32_t size;      /* bytes used, including .bss */
@@ -56,6 +62,8 @@ typedef struct {
     int nsyms;
     RvLine *lines;
     int nlines;
+    RvBound *bounds;
+    int nbounds;
     char *listing;      /* optional: "addr  bytes  source" lines */
     char error[320];
 } RvImage;
@@ -105,5 +113,10 @@ RvPipe *rv_pipe_new(const RvImage *img, int diagram_rows);
 void rv_pipe_free(RvPipe *p);
 void rv_pipe_step(void *pipe, uint32_t pc, uint32_t insn, uint32_t next_pc);
 void rv_pipe_report(const RvPipe *p, const RvImage *img, RvWriteFn out, void *ud);
+
+/* ---- worst-case timing (rv_wcet.c) -------------------------------------- */
+
+/* The most cycles the script and each event handler can take. */
+void rv_wcet_report(const RvImage *img, uint32_t mhz, RvWriteFn out, void *ud);
 
 #endif

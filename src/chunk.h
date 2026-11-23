@@ -72,6 +72,15 @@ typedef struct {
     Value *consts;
     int const_count;
     int const_cap;
+    /* for loops whose count is known when compiling, such as for i in 0..8:
+       the offset of the loop's OP_LOOP and how many times the body runs.
+       Used to work out worst-case timing (jlang wcet). */
+    struct {
+        int off;
+        int count;
+    } *bounds;
+    int bound_count;
+    int bound_cap;
 } Chunk;
 
 typedef struct {

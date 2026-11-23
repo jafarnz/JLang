@@ -44,6 +44,8 @@ typedef struct {
     const char *bin_path;
     const char *vcd_path;
     bool pipeline_on;       /* jlang emu --pipeline */
+    bool wcet;              /* jlang wcet */
+    uint32_t mhz;           /* clock speed for jlang wcet */
     int pipeline_rows;      /* rows of its diagram */
     int run_for_s;          /* how long timers run, 0 = the default */
     const char *emits[MAX_EMITS];
@@ -65,6 +67,8 @@ static void usage(FILE *f) {
         "  jlang emu <file.jlang>        compile to RISC-V and run it on the built-in emulator\n"
         "  jlang build <file.jlang>      compile to RISC-V assembly for a real board (-o out.s)\n"
         "  jlang asm <file.s>            assemble RISC-V assembly and run it on the emulator\n"
+        "  jlang wcet <file.jlang>       the most time the script and each handler can take\n"
+        "                                (--mhz <n> sets the clock, default 160)\n"
         "  jlang version\n"
         "\n"
         "options for run / xray:\n"
@@ -129,6 +133,7 @@ static char *read_file(const char *path) {
 static bool parse_args(int argc, char **argv, Options *o) {
     memset(o, 0, sizeof *o);
     o->heap = JL_DEFAULT_HEAP;
+    o->mhz = 160;
     board_sim_default_options(&o->board);
     if (argc < 2) return false;
     o->command = argv[1];
@@ -156,6 +161,14 @@ static bool parse_args(int argc, char **argv, Options *o) {
                 return false;
             }
             o->run_for_s = (int)v;
+        } else if (strcmp(a, "--mhz") == 0 && has_value) {
+            char *end;
+            long v = strtol(argv[++i], &end, 10);
+            if (*end != '\0' || v < 1 || v > 10000) {
+                fprintf(stderr, "jlang: --mhz must be 1 to 10000\n");
+                return false;
+            }
+            o->mhz = (uint32_t)v;
         } else if (strcmp(a, "--pipeline") == 0) {
             o->pipeline_on = true;
             o->pipeline_rows = 16;
@@ -383,6 +396,12 @@ static int native(const Options *o, bool emulate) {
         return EXIT_COMPILE;
     }
     if (o->listing && img.listing) fputs(img.listing, stdout);
+    if (o->wcet) {
+        rv_wcet_report(&img, o->mhz, write_stdout, NULL);
+        rv_image_free(&img);
+        free(assembly);
+        return 0;
+    }
 
     int code = 0;
     if (o->bin_path) {
@@ -684,7 +703,8 @@ int main(int argc, char **argv) {
 
     bool known = strcmp(cmd, "run") == 0 || strcmp(cmd, "xray") == 0 ||
                  strcmp(cmd, "check") == 0 || strcmp(cmd, "dis") == 0 ||
-                 strcmp(cmd, "emu") == 0 || strcmp(cmd, "build") == 0 || strcmp(cmd, "asm") == 0;
+                 strcmp(cmd, "emu") == 0 || strcmp(cmd, "build") == 0 || strcmp(cmd, "asm") == 0 ||
+                 strcmp(cmd, "wcet") == 0;
     if (!known) {
         fprintf(stderr, "jlang: unknown command '%s'\n\n", cmd);
         usage(stderr);
@@ -696,6 +716,10 @@ int main(int argc, char **argv) {
     }
     if (strcmp(cmd, "run") == 0) return run_file(&o, false);
     if (strcmp(cmd, "emu") == 0) return native(&o, true);
+    if (strcmp(cmd, "wcet") == 0) {
+        o.wcet = true;
+        return native(&o, true);
+    }
     if (strcmp(cmd, "asm") == 0) return run_assembly(&o);
     if (strcmp(cmd, "build") == 0) return native(&o, false);
     if (strcmp(cmd, "xray") == 0) return run_file(&o, true);

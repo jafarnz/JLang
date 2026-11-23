@@ -33,5 +33,10 @@ for t in "$DIR"/tests/pipeline/*.jlang; do
     "$BIN" emu "$t" --pipeline 12 > "$TMP/$name.txt" 2>&1
     check "pipeline $name" "$DIR/tests/pipeline/$name.expected.txt" "$TMP/$name.txt"
 done
+for t in "$DIR"/tests/wcet/*.jlang; do
+    name="$(basename "$t" .jlang)"
+    "$BIN" wcet "$t" > "$TMP/$name.txt" 2>&1
+    check "wcet $name" "$DIR/tests/wcet/$name.expected.txt" "$TMP/$name.txt"
+done
 echo "files: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

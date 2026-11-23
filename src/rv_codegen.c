@@ -783,6 +783,8 @@ static void gen_function(Gen *g, int fi) {
                 out(g, "    addi s1, s1, -4\n    lw t0, 0(s1)\n    bnez t0, .Lok%d\n    j .L%d_%d\n.Lok%d:\n", skip, fi, t, skip);
                 pop_kinds(g, 1);
             } else {
+                for (int b = 0; b < ch->bound_count; b++)
+                    if (ch->bounds[b].off == off) out(g, "    # @bound %d\n", ch->bounds[b].count);
                 out(g, "    j .L%d_%d\n", fi, t);
                 reachable = false;
             }

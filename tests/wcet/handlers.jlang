@@ -1,0 +1,19 @@
+// One handler with a known loop count, one with a while loop.
+let LED = 2
+pin_mode(LED, "out")
+let presses = 0
+
+on press {
+    presses += 1
+    for i in 0..8 {
+        pin_write(LED, i % 2)
+    }
+    print(presses)
+}
+
+on tick {
+    let n = 0
+    while n < presses {
+        n += 1
+    }
+}

@@ -49,6 +49,8 @@ typedef struct {
     int line_nwords;
     /* JLang line map */
     int caplines;
+    int pending_bound; /* from "# @bound N", for the next instruction; -1 = none */
+    int capbounds;
 } Asm;
 
 /* ------------------------------------------------------------------ */
@@ -700,6 +702,8 @@ static void process_line(Asm *a, char *line) {
     /* "# @line N" maps the following code to JLang line N */
     char *at = strstr(line, "# @line ");
     if (at) a->jl_line = atoi(at + 8);
+    char *bound = strstr(line, "# @bound ");
+    if (bound) a->pending_bound = atoi(bound + 9);
 
     /* strip comments, but not inside a string */
     bool in_str = false;
@@ -768,6 +772,16 @@ static void process_line(Asm *a, char *line) {
     if (mnemonic[0] == '.') directive(a, mnemonic, ops, n, rest_copy);
     else instruction(a, mnemonic, ops, n);
 
+    if (a->pass == 2 && start_sec == SEC_TEXT && a->sec == SEC_TEXT && here(a) > start_addr && a->pending_bound >= 0) {
+        RvImage *img = a->img;
+        if (img->nbounds == a->capbounds) {
+            a->capbounds = a->capbounds ? a->capbounds * 2 : 16;
+            img->bounds = realloc(img->bounds, (size_t)a->capbounds * sizeof(RvBound));
+        }
+        img->bounds[img->nbounds].addr = start_addr;
+        img->bounds[img->nbounds++].count = a->pending_bound;
+        a->pending_bound = -1;
+    }
     if (a->pass == 2 && start_sec == SEC_TEXT && a->sec == SEC_TEXT && here(a) > start_addr) {
         if (a->jl_line > 0) {
             RvImage *img = a->img;
@@ -798,6 +812,7 @@ static void run_pass(Asm *a, const char *src, int pass) {
     a->pass = pass;
     a->sec = SEC_TEXT;
     a->jl_line = 0;
+    a->pending_bound = -1;
     memset(a->off, 0, sizeof a->off);
     a->asm_line = 0;
     const char *p = src;
@@ -870,9 +885,12 @@ bool rv_assemble(const char *src, RvImage *out, bool want_listing, bool allow_un
     if (a.failed) {
         free(out->image);
         free(out->lines);
+        free(out->bounds);
         out->image = NULL;
         out->lines = NULL;
+        out->bounds = NULL;
         out->nlines = 0;
+        out->nbounds = 0;
         return false;
     }
     return true;
@@ -882,6 +900,7 @@ void rv_image_free(RvImage *img) {
     free(img->image);
     free(img->syms);
     free(img->lines);
+    free(img->bounds);
     free(img->listing);
     memset(img, 0, sizeof *img);
 }

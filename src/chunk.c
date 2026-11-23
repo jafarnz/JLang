@@ -55,6 +55,7 @@ void program_free(Program *p) {
         free(p->fns[i].chunk.code);
         free(p->fns[i].chunk.lines);
         free(p->fns[i].chunk.consts);
+        free(p->fns[i].chunk.bounds);
     }
     free(p->fns);
     for (int i = 0; i < p->str_count; i++) free(p->strs[i].chars);
