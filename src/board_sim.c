@@ -52,6 +52,7 @@ void board_sim_default_options(BoardSimOptions *o) {
     o->ai_answer = "Bus 179 is arriving.";
     for (int i = 0; i < SIM_PINS; i++) o->analog_inputs[i] = -1;
     o->distance_cm = 100;
+    o->temperature_c = 24;
     o->panel_w = PANEL_DEFAULT_W;
     o->panel_h = PANEL_DEFAULT_H;
     o->print_frames = true;
@@ -374,6 +375,153 @@ static bool sim_distance(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* ---- I2C and SPI ------------------------------------------------------------
+ *
+ * The simulated I2C bus has three devices on it, so programs can talk to
+ * real chips' registers:
+ *   0x48  a TMP102 temperature sensor: register 0 holds the temperature
+ *         as a 12-bit number of 1/16 degrees, in the top bits of 2 bytes
+ *   0x68  an MPU-6050 motion sensor: WHO_AM_I (0x75) is 0x68; it starts
+ *         asleep, and writing 0 to PWR_MGMT_1 (0x6B) wakes it, after which
+ *         the accelerometer (0x3B..0x40) reads 1 g (16384) on the z axis
+ *   0x3C  an SH1106 OLED display, which accepts whatever is written
+ */
+
+static struct {
+    uint8_t mpu[128]; /* MPU-6050 registers */
+    uint8_t ptr[128]; /* register pointer of each device */
+    bool ready;
+} bus;
+
+static bool i2c_present(int addr) { return addr == 0x48 || addr == 0x68 || addr == 0x3C; }
+
+static void bus_setup(void) {
+    if (bus.ready) return;
+    memset(&bus, 0, sizeof bus);
+    bus.mpu[0x75] = 0x68; /* WHO_AM_I */
+    bus.mpu[0x6B] = 0x40; /* PWR_MGMT_1: asleep */
+    bus.ready = true;
+}
+
+static uint8_t i2c_reg(int addr, int reg) {
+    if (addr == 0x48) {
+        int raw = sim.opt.temperature_c * 16; /* 1/16 degree steps */
+        if (reg == 0x00) return (uint8_t)(raw >> 4);
+        if (reg == 0x01) return (uint8_t)(raw << 4);
+        if (reg == 0x02) return 0x60; /* configuration register */
+        if (reg == 0x03) return 0xA0;
+        return 0;
+    }
+    if (addr == 0x68) {
+        bool awake = !(bus.mpu[0x6B] & 0x40);
+        if (reg >= 0x3B && reg <= 0x40) {
+            if (!awake) return 0;
+            return reg == 0x3F ? 0x40 : 0; /* z = 0x4000 = 16384 = 1 g */
+        }
+        return bus.mpu[reg & 0x7F];
+    }
+    return 0;
+}
+
+static bool get_byte(JlVM *vm, const char *fn, int arg, Value v, int32_t *out) {
+    if (!jl_get_int(vm, fn, arg, v, out)) return false;
+    if (*out < 0 || *out > 255) return jl_error(vm, "%s(): argument %d must be a byte (0 to 255), got %d", fn, arg, (int)*out);
+    return true;
+}
+
+static bool get_i2c_addr(JlVM *vm, const char *fn, Value v, int32_t *addr) {
+    if (!jl_get_int(vm, fn, 1, v, addr)) return false;
+    if (*addr < 0 || *addr > 127)
+        return jl_error(vm, "%s(): I2C addresses are 7 bits (0 to 127, or 0x00 to 0x7F), got %d", fn, (int)*addr);
+    if (!i2c_present(*addr))
+        return jl_error(vm, "%s(): no device answered at address 0x%02X (i2c_scan() lists the ones that do)", fn,
+                        (unsigned)*addr);
+    return true;
+}
+
+/* i2c_scan(): the addresses of the devices on the bus, as an array you free. */
+static bool sim_i2c_scan(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args;
+    static const int found[] = {0x3C, 0x48, 0x68};
+    Value *items;
+    if (!jl_new_array(vm, 3, out, &items)) return false;
+    for (int i = 0; i < 3; i++) items[i] = int_val(found[i]);
+    SIM_LOG("i2c scan found 0x3C, 0x48, 0x68\n");
+    return true;
+}
+
+/* i2c_write(addr, byte, ...): the first byte is usually a register number. */
+static bool sim_i2c_write(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)out;
+    int32_t addr;
+    if (argc < 2) return jl_error(vm, "i2c_write(): give an address and at least one byte, like i2c_write(0x68, 0x6B, 0)");
+    if (!get_i2c_addr(vm, "i2c_write", args[0], &addr)) return false;
+    bus_setup();
+    char hex[3 * 16 + 8] = "";
+    size_t n = 0;
+    for (int i = 1; i < argc; i++) {
+        int32_t b;
+        if (!get_byte(vm, "i2c_write", i + 1, args[i], &b)) return false;
+        if (i == 1) bus.ptr[addr] = (uint8_t)b;
+        else if (addr == 0x68) bus.mpu[(bus.ptr[addr] + i - 2) & 0x7F] = (uint8_t)b;
+        if (i <= 16) n += (size_t)snprintf(hex + n, sizeof hex - n, " %02X", (unsigned)b);
+    }
+    SIM_LOG("i2c 0x%02X write%s%s\n", (unsigned)addr, hex, argc > 17 ? " ..." : "");
+    return true;
+}
+
+/* i2c_read(addr, reg): one byte from a register. */
+static bool sim_i2c_read(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t addr, reg;
+    if (!get_i2c_addr(vm, "i2c_read", args[0], &addr) || !get_byte(vm, "i2c_read", 2, args[1], &reg)) return false;
+    bus_setup();
+    uint8_t v = i2c_reg(addr, reg);
+    SIM_LOG("i2c 0x%02X read register 0x%02X -> 0x%02X\n", (unsigned)addr, (unsigned)reg, (unsigned)v);
+    *out = int_val(v);
+    return true;
+}
+
+/* i2c_read16(addr, reg): two bytes, high byte first, as most sensors send them. */
+static bool sim_i2c_read16(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t addr, reg;
+    if (!get_i2c_addr(vm, "i2c_read16", args[0], &addr) || !get_byte(vm, "i2c_read16", 2, args[1], &reg)) return false;
+    bus_setup();
+    uint16_t v = (uint16_t)(i2c_reg(addr, reg) << 8 | i2c_reg(addr, (reg + 1) & 0xFF));
+    SIM_LOG("i2c 0x%02X read register 0x%02X -> 0x%04X\n", (unsigned)addr, (unsigned)reg, (unsigned)v);
+    *out = int_val(v);
+    return true;
+}
+
+/* spi_write(cs, byte, ...): select the chip on pin cs, send the bytes. */
+static bool sim_spi_write(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)out;
+    int32_t cs;
+    if (argc < 2) return jl_error(vm, "spi_write(): give the chip-select pin and at least one byte");
+    if (!get_pin(vm, "spi_write", args[0], &cs)) return false;
+    char hex[3 * 16 + 8] = "";
+    size_t n = 0;
+    for (int i = 1; i < argc; i++) {
+        int32_t b;
+        if (!get_byte(vm, "spi_write", i + 1, args[i], &b)) return false;
+        if (i <= 16) n += (size_t)snprintf(hex + n, sizeof hex - n, " %02X", (unsigned)b);
+    }
+    SIM_LOG("spi cs %d write%s%s\n", (int)cs, hex, argc > 17 ? " ..." : "");
+    return true;
+}
+
+/* spi_transfer(cs, byte): send one byte and return the one received at the
+   same time. Nothing is connected in the simulator, so it reads 0xFF. */
+static bool sim_spi_transfer(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t cs, b;
+    if (!get_pin(vm, "spi_transfer", args[0], &cs) || !get_byte(vm, "spi_transfer", 2, args[1], &b)) return false;
+    SIM_LOG("spi cs %d sent %02X, received FF\n", (int)cs, (unsigned)b);
+    *out = int_val(0xFF);
+    return true;
+}
+
 /* ---- the LED panel ------------------------------------------------------ */
 
 static bool sim_led(JlVM *vm, int argc, Value *args, Value *out) {
@@ -636,4 +784,11 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     jl_register_native(vm, "led_height", sim_led_height, 0);
     jl_register_native(vm, "led_size", sim_led_size, 0);
     jl_register_native(vm, "led_text", sim_led_text, 4);
+    jl_register_native(vm, "i2c_scan", sim_i2c_scan, 0);
+    jl_register_native(vm, "i2c_write", sim_i2c_write, -1);
+    jl_register_native(vm, "i2c_read", sim_i2c_read, 2);
+    jl_register_native(vm, "i2c_read16", sim_i2c_read16, 2);
+    jl_register_native(vm, "spi_write", sim_spi_write, -1);
+    jl_register_native(vm, "spi_transfer", sim_spi_transfer, 2);
+    bus.ready = false;
 }

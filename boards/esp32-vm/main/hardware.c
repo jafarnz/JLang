@@ -12,6 +12,9 @@
  *   led(x, y, c), led_clear(), led_show(),     a WS2812 LED panel, set up
  *   led_text(msg, x, y, c), led_width(),       with the PANEL_ settings below
  *   led_height(), led_size()
+ *   i2c_scan(), i2c_write(addr, bytes...),     I2C sensors and displays, on
+ *   i2c_read(addr, reg), i2c_read16(addr, reg) the I2C_ pins below
+ *   spi_write(cs, bytes...), spi_transfer(cs, b)  SPI chips, on the SPI_ pins
  *
  * PWM uses the LEDC peripheral: timer 0 for brightness, timer 1 for
  * servos and timer 2 for tones. WS2812 LEDs use the RMT peripheral.
@@ -20,7 +23,9 @@
 #include <string.h>
 
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "driver/ledc.h"
+#include "driver/spi_master.h"
 #include "sdkconfig.h"
 #if CONFIG_JLANG_ANALOG
 #include "esp_adc/adc_oneshot.h"
@@ -45,6 +50,38 @@
 /* Each LED at full white draws about 60 mA, so a whole panel would need more
    than USB can give. Colours are scaled down to this many 255ths. */
 #define PANEL_BRIGHTNESS 24
+/* I2C and SPI pins: the SDA/SCL and SCK/MISO/MOSI pins printed on XIAO
+   boards (D4, D5 and D8, D9, D10), or the usual ones on other boards. */
+#if CONFIG_IDF_TARGET_ESP32S3
+#define I2C_SDA 5
+#define I2C_SCL 6
+#define SPI_SCK 7
+#define SPI_MISO 8
+#define SPI_MOSI 9
+#elif CONFIG_IDF_TARGET_ESP32C6
+#define I2C_SDA 22
+#define I2C_SCL 23
+#define SPI_SCK 19
+#define SPI_MISO 20
+#define SPI_MOSI 18
+#elif CONFIG_IDF_TARGET_ESP32C3
+#define I2C_SDA 6
+#define I2C_SCL 7
+#define SPI_SCK 8
+#define SPI_MISO 9
+#define SPI_MOSI 10
+#else
+#define I2C_SDA 21
+#define I2C_SCL 22
+#define SPI_SCK 18
+#define SPI_MISO 19
+#define SPI_MOSI 23
+#endif
+#define I2C_HZ 100000
+#define SPI_HZ 1000000
+#define MAX_SPI_DEVICES 3
+#define MAX_I2C_DEVICES 8
+
 #define MAX_STRIPS 2
 #define STRIP_LEDS 64
 
@@ -446,6 +483,157 @@ static bool b_led_text(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* ---- I2C ------------------------------------------------------------------- */
+
+static i2c_master_bus_handle_t i2c_bus;
+static struct {
+    int addr;
+    i2c_master_dev_handle_t dev;
+} i2c_devs[MAX_I2C_DEVICES];
+static int i2c_dev_count;
+
+static bool i2c_start(JlVM *vm, const char *fn) {
+    if (i2c_bus) return true;
+    i2c_master_bus_config_t cfg = {
+        .i2c_port = -1,
+        .sda_io_num = I2C_SDA,
+        .scl_io_num = I2C_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    if (i2c_new_master_bus(&cfg, &i2c_bus) != ESP_OK)
+        return jl_error(vm, "%s(): couldn't start I2C on SDA %d, SCL %d", fn, I2C_SDA, I2C_SCL);
+    return true;
+}
+
+static bool i2c_dev(JlVM *vm, const char *fn, Value v, i2c_master_dev_handle_t *out) {
+    int32_t addr;
+    if (!jl_get_int(vm, fn, 1, v, &addr)) return false;
+    if (addr < 0 || addr > 127) return jl_error(vm, "%s(): I2C addresses are 7 bits (0 to 127), got %d", fn, (int)addr);
+    if (!i2c_start(vm, fn)) return false;
+    for (int i = 0; i < i2c_dev_count; i++)
+        if (i2c_devs[i].addr == addr) return *out = i2c_devs[i].dev, true;
+    if (i2c_dev_count == MAX_I2C_DEVICES) return jl_error(vm, "%s(): at most %d I2C devices", fn, MAX_I2C_DEVICES);
+    i2c_device_config_t dcfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = (uint16_t)addr, .scl_speed_hz = I2C_HZ};
+    if (i2c_master_bus_add_device(i2c_bus, &dcfg, out) != ESP_OK) return jl_error(vm, "%s(): couldn't add device 0x%02X", fn, (unsigned)addr);
+    i2c_devs[i2c_dev_count].addr = addr;
+    i2c_devs[i2c_dev_count++].dev = *out;
+    return true;
+}
+
+static bool get_byte(JlVM *vm, const char *fn, int arg, Value v, uint8_t *out) {
+    int32_t b;
+    if (!jl_get_int(vm, fn, arg, v, &b)) return false;
+    if (b < 0 || b > 255) return jl_error(vm, "%s(): argument %d must be a byte (0 to 255), got %d", fn, arg, (int)b);
+    *out = (uint8_t)b;
+    return true;
+}
+
+static bool b_i2c_scan(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args;
+    if (!i2c_start(vm, "i2c_scan")) return false;
+    int found[128];
+    int n = 0;
+    for (int a = 0x08; a < 0x78; a++)
+        if (i2c_master_probe(i2c_bus, (uint16_t)a, 20) == ESP_OK) found[n++] = a;
+    Value *items;
+    if (!jl_new_array(vm, (uint32_t)n, out, &items)) return false;
+    for (int i = 0; i < n; i++) items[i] = int_val(found[i]);
+    return true;
+}
+
+static bool b_i2c_write(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)out;
+    i2c_master_dev_handle_t dev;
+    uint8_t data[64];
+    if (argc < 2 || argc > 65) return jl_error(vm, "i2c_write(): give an address and 1 to 64 bytes");
+    if (!i2c_dev(vm, "i2c_write", args[0], &dev)) return false;
+    for (int i = 1; i < argc; i++)
+        if (!get_byte(vm, "i2c_write", i + 1, args[i], &data[i - 1])) return false;
+    if (i2c_master_transmit(dev, data, (size_t)argc - 1, 100) != ESP_OK)
+        return jl_error(vm, "i2c_write(): the device didn't answer. Check its address and wiring");
+    return true;
+}
+
+static bool read_reg(JlVM *vm, const char *fn, Value *args, uint8_t *data, size_t n) {
+    i2c_master_dev_handle_t dev;
+    uint8_t reg;
+    if (!i2c_dev(vm, fn, args[0], &dev) || !get_byte(vm, fn, 2, args[1], &reg)) return false;
+    if (i2c_master_transmit_receive(dev, &reg, 1, data, n, 100) != ESP_OK)
+        return jl_error(vm, "%s(): the device didn't answer. Check its address and wiring", fn);
+    return true;
+}
+
+static bool b_i2c_read(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    uint8_t d[1];
+    if (!read_reg(vm, "i2c_read", args, d, 1)) return false;
+    *out = int_val(d[0]);
+    return true;
+}
+
+static bool b_i2c_read16(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    uint8_t d[2];
+    if (!read_reg(vm, "i2c_read16", args, d, 2)) return false;
+    *out = int_val(d[0] << 8 | d[1]);
+    return true;
+}
+
+/* ---- SPI ------------------------------------------------------------------- */
+
+static bool spi_ready;
+static struct {
+    int cs;
+    spi_device_handle_t dev;
+} spi_devs[MAX_SPI_DEVICES];
+static int spi_dev_count;
+
+static bool spi_dev(JlVM *vm, const char *fn, Value v, spi_device_handle_t *out) {
+    int32_t cs;
+    if (!get_out_pin(vm, fn, 1, v, &cs)) return false;
+    if (!spi_ready) {
+        spi_bus_config_t bus = {.sclk_io_num = SPI_SCK, .miso_io_num = SPI_MISO, .mosi_io_num = SPI_MOSI,
+                                .quadwp_io_num = -1, .quadhd_io_num = -1, .max_transfer_sz = 64};
+        if (spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_DISABLED) != ESP_OK)
+            return jl_error(vm, "%s(): couldn't start SPI", fn);
+        spi_ready = true;
+    }
+    for (int i = 0; i < spi_dev_count; i++)
+        if (spi_devs[i].cs == cs) return *out = spi_devs[i].dev, true;
+    if (spi_dev_count == MAX_SPI_DEVICES) return jl_error(vm, "%s(): at most %d SPI chips", fn, MAX_SPI_DEVICES);
+    spi_device_interface_config_t dcfg = {.clock_speed_hz = SPI_HZ, .mode = 0, .spics_io_num = cs, .queue_size = 1};
+    if (spi_bus_add_device(SPI2_HOST, &dcfg, out) != ESP_OK) return jl_error(vm, "%s(): GPIO %d can't be a chip select", fn, (int)cs);
+    spi_devs[spi_dev_count].cs = cs;
+    spi_devs[spi_dev_count++].dev = *out;
+    return true;
+}
+
+static bool b_spi_write(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)out;
+    spi_device_handle_t dev;
+    uint8_t data[64];
+    if (argc < 2 || argc > 65) return jl_error(vm, "spi_write(): give the chip-select pin and 1 to 64 bytes");
+    if (!spi_dev(vm, "spi_write", args[0], &dev)) return false;
+    for (int i = 1; i < argc; i++)
+        if (!get_byte(vm, "spi_write", i + 1, args[i], &data[i - 1])) return false;
+    spi_transaction_t t = {.length = (size_t)(argc - 1) * 8, .tx_buffer = data};
+    if (spi_device_polling_transmit(dev, &t) != ESP_OK) return jl_error(vm, "spi_write(): the transfer failed");
+    return true;
+}
+
+static bool b_spi_transfer(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    spi_device_handle_t dev;
+    uint8_t tx, rx = 0;
+    if (!spi_dev(vm, "spi_transfer", args[0], &dev) || !get_byte(vm, "spi_transfer", 2, args[1], &tx)) return false;
+    spi_transaction_t t = {.length = 8, .tx_buffer = &tx, .rx_buffer = &rx};
+    if (spi_device_polling_transmit(dev, &t) != ESP_OK) return jl_error(vm, "spi_transfer(): the transfer failed");
+    *out = int_val(rx);
+    return true;
+}
+
 /* Turns off everything the last program left on, before the next one. */
 static bool registered; /* the tables below are set up */
 
@@ -489,4 +677,10 @@ void hardware_register(JlVM *vm) {
     jl_register_native(vm, "led_height", b_led_height, 0);
     jl_register_native(vm, "led_size", b_led_size, 0);
     jl_register_native(vm, "led_text", b_led_text, 4);
+    jl_register_native(vm, "i2c_scan", b_i2c_scan, 0);
+    jl_register_native(vm, "i2c_write", b_i2c_write, -1);
+    jl_register_native(vm, "i2c_read", b_i2c_read, 2);
+    jl_register_native(vm, "i2c_read16", b_i2c_read16, 2);
+    jl_register_native(vm, "spi_write", b_spi_write, -1);
+    jl_register_native(vm, "spi_transfer", b_spi_transfer, 2);
 }

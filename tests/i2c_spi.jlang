@@ -1,0 +1,35 @@
+// args: --temperature 31
+// Find the devices, then read a temperature sensor and a motion sensor.
+let found = i2c_scan()
+for i in 0..len(found) {
+    printf("found a device at {x2}\n", found[i])
+}
+free(found)
+
+let TMP102 = 0x48
+let raw = i2c_read16(TMP102, 0x00)
+let celsius = (raw >> 4) / 16
+print("temperature:", celsius, "C")
+
+let MPU = 0x68
+print("who am i:", i2c_read(MPU, 0x75))
+i2c_write(MPU, 0x6B, 0)            // wake it up
+let z = i2c_read16(MPU, 0x3F)
+print("z acceleration:", z, "=", z / 16384, "g")
+
+spi_write(10, 0x0C, 0x01)          // MAX7219: leave shutdown mode
+print(spi_transfer(10, 0x9F))
+// expect: [sim      0ms] i2c scan found 0x3C, 0x48, 0x68
+// expect: found a device at 0x3C
+// expect: found a device at 0x48
+// expect: found a device at 0x68
+// expect: [sim      0ms] i2c 0x48 read register 0x00 -> 0x1F00
+// expect: temperature: 31 C
+// expect: [sim      0ms] i2c 0x68 read register 0x75 -> 0x68
+// expect: who am i: 104
+// expect: [sim      0ms] i2c 0x68 write 6B 00
+// expect: [sim      0ms] i2c 0x68 read register 0x3F -> 0x4000
+// expect: z acceleration: 16384 = 1 g
+// expect: [sim      0ms] spi cs 10 write 0C 01
+// expect: [sim      0ms] spi cs 10 sent 9F, received FF
+// expect: 255

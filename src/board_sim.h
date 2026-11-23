@@ -27,6 +27,7 @@ typedef struct {
     void *frame_data;
     uint32_t max_ms;             /* stop once this much time has passed, 0 = never */
     Vcd *vcd;                    /* record pin changes for a waveform viewer, or NULL */
+    int temperature_c;           /* what the simulated I2C temperature sensor measures */
 } BoardSimOptions;
 
 void board_sim_default_options(BoardSimOptions *o);

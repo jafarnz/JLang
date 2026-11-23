@@ -177,6 +177,8 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
         char *end;
         if (*p == 'd' && p[1] == '=') { /* d=CM: what distance() measures */
             opt.distance_cm = (int)strtol(p + 2, NULL, 10);
+        } else if (*p == 't' && p[1] == '=') { /* t=C: the I2C temperature sensor */
+            opt.temperature_c = (int)strtol(p + 2, NULL, 10);
         } else if (*p == 'a') { /* aN=V: what analog(N) reads */
             long pin = strtol(p + 1, &end, 10);
             if (*end == '=' && pin >= 0 && pin < SIM_PINS) {

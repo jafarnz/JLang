@@ -70,6 +70,7 @@ static void usage(FILE *f) {
         "  --pin <n>=<0|1>               value the simulated pin n reads as input\n"
         "  --analog <n>=<0..4095>        value analog(n) reads (default 2048)\n"
         "  --distance <cm>               what distance() measures (default 100)\n"
+        "  --temperature <C>             what the I2C temperature sensor reads (default 24)\n"
         "  --answer <text>               what the simulated ask() replies\n"
         "  --heap <bytes>                heap size (default %u)\n"
         "  --max-cycles <n>              stop after n instructions (catches endless loops)\n"
@@ -207,6 +208,14 @@ static bool parse_args(int argc, char **argv, Options *o) {
                 return false;
             }
             o->board.analog_inputs[pin] = val;
+        } else if (strcmp(a, "--temperature") == 0 && has_value) {
+            char *end;
+            long v = strtol(argv[++i], &end, 10);
+            if (*end != '\0' || v < -55 || v > 125) {
+                fprintf(stderr, "jlang: --temperature must be -55 to 125 (degrees C)\n");
+                return false;
+            }
+            o->board.temperature_c = (int)v;
         } else if (strcmp(a, "--distance") == 0 && has_value) {
             char *end;
             long v = strtol(argv[++i], &end, 10);

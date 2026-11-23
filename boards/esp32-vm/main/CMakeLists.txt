@@ -6,5 +6,5 @@ idf_component_register(SRCS "main.c" "hardware.c" "${JL}/hw.c"
                             "${JL}/debug.c" "${JL}/heap.c" "${JL}/lexer.c"
                             "${JL}/value.c" "${JL}/vm.c"
                        INCLUDE_DIRS "." "${JL}"
-                       PRIV_REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_uart esp_driver_usb_serial_jtag esp_adc esp_timer nvs_flash
+                       PRIV_REQUIRES esp_driver_gpio esp_driver_i2c esp_driver_spi esp_driver_ledc esp_driver_uart esp_driver_usb_serial_jtag esp_adc esp_timer nvs_flash
                        EMBED_TXTFILES "app.jlang")

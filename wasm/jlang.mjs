@@ -46,6 +46,7 @@ export async function loadJLang(source) {
           ...Object.entries(opts.pins ?? {}).map(([p, v]) => `${p}=${v ? 1 : 0}`),
           ...Object.entries(opts.analog ?? {}).map(([p, v]) => `a${p}=${Math.round(v)}`),
           ...(opts.distance != null ? [`d=${Math.round(opts.distance)}`] : []),
+          ...(opts.temperature != null ? [`t=${Math.round(opts.temperature)}`] : []),
         ].join(","),
       ),
       cstr(opts.answer ?? ""),
