@@ -56,6 +56,7 @@ void program_free(Program *p) {
         free(p->fns[i].chunk.lines);
         free(p->fns[i].chunk.consts);
         free(p->fns[i].chunk.bounds);
+        free(p->fns[i].chunk.vars);
     }
     free(p->fns);
     free(p->named);

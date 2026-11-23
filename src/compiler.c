@@ -261,6 +261,13 @@ static void end_scope(Compiler *c) {
            fs->locals[fs->local_count - 1].depth > fs->scope_depth) {
         emit(c, OP_POP);
         fs->local_count--;
+        /* debug info: the variable in this slot ends here */
+        Chunk *ch = chunk(c);
+        for (int i = ch->var_count - 1; i >= 0; i--)
+            if (ch->vars[i].slot == fs->local_count && ch->vars[i].to < 0) {
+                ch->vars[i].to = ch->count;
+                break;
+            }
     }
 }
 
@@ -298,7 +305,25 @@ static void declare_local(Compiler *c, Token name) {
 }
 
 static void mark_initialized(Compiler *c) {
-    c->fs->locals[c->fs->local_count - 1].depth = c->fs->scope_depth;
+    int slot = c->fs->local_count - 1;
+    Local *l = &c->fs->locals[slot];
+    l->depth = c->fs->scope_depth;
+    /* Debug info: from here on, this slot holds this variable. Hidden
+       locals such as a for loop's "(end)" are left out. */
+    if (l->name.length > 0 && l->name.start[0] != '(') {
+        Chunk *ch = chunk(c);
+        int si = program_intern(&c->vm->prog, l->name.start, (uint32_t)l->name.length);
+        if (si >= 0) {
+            if (ch->var_count == ch->var_cap) {
+                ch->var_cap = ch->var_cap ? ch->var_cap * 2 : 8;
+                ch->vars = jl_xrealloc(ch->vars, (size_t)ch->var_cap * sizeof *ch->vars);
+            }
+            ch->vars[ch->var_count].name = (uint16_t)si;
+            ch->vars[ch->var_count].slot = (uint8_t)slot;
+            ch->vars[ch->var_count].from = ch->count;
+            ch->vars[ch->var_count++].to = -1;
+        }
+    }
 }
 
 static int resolve_local(Compiler *c, const Token *name) {

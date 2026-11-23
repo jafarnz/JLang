@@ -14,6 +14,7 @@
 #include "../src/jlang.h"
 #include "../src/rv.h"
 #include "../src/rv_codegen.h"
+#include "../src/vm.h"
 
 #define EXPORT(name) __attribute__((export_name(#name)))
 #define OUTPUT_MAX (512u * 1024u)
@@ -118,10 +119,197 @@ static void append(const char *d, size_t n) {
     out_len += n;
 }
 
+static size_t printed; /* bytes of program output (not errors) so far */
+
 static void write_out(void *ud, const char *d, size_t n) {
     (void)ud;
+    printed += n;
     append(d, n);
 }
+
+/* ---- the step debugger ------------------------------------------------------
+ *
+ * In mode 6 the program runs as usual, and every time it reaches a new line
+ * a snapshot is written as JSON: the line, the call stack with each call's
+ * variables, the globals, the heap blocks and how much has been printed.
+ * The playground steps through the snapshots forwards and backwards.
+ */
+#define TRACE_MAX (6u * 1024u * 1024u)
+#define TRACE_STEPS 3000
+static char *trace;
+static size_t trace_len, trace_cap;
+static int trace_steps, trace_last_line, trace_last_depth;
+static bool trace_full;
+
+static void tput(const char *d, size_t n) {
+    if (trace_len + n > TRACE_MAX) {
+        trace_full = true;
+        return;
+    }
+    if (trace_len + n > trace_cap) {
+        size_t cap = trace_cap ? trace_cap : 65536;
+        while (cap < trace_len + n) cap *= 2;
+        char *t = realloc(trace, cap);
+        if (t == NULL) {
+            trace_full = true;
+            return;
+        }
+        trace = t;
+        trace_cap = cap;
+    }
+    memcpy(trace + trace_len, d, n);
+    trace_len += n;
+}
+
+static void tputs(const char *s) { tput(s, strlen(s)); }
+
+/* A JSON string. */
+static void tstr(const char *s, size_t n) {
+    tput("\"", 1);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ch = (unsigned char)s[i];
+        char esc[8];
+        if (ch == '"' || ch == '\\') {
+            esc[0] = '\\';
+            esc[1] = (char)ch;
+            tput(esc, 2);
+        } else if (ch < 0x20) {
+            snprintf(esc, sizeof esc, "\\u%04x", ch);
+            tput(esc, 6);
+        } else {
+            tput((const char *)&ch, 1);
+        }
+    }
+    tput("\"", 1);
+}
+
+/* A value as the debugger shows it, like print() but with strings quoted. */
+static size_t show(JlVM *vm, Value v, char *out, size_t size, int depth) {
+    size_t n = 0;
+#define ADD(...) (n += (size_t)snprintf(out + n, n < size ? size - n : 0, __VA_ARGS__))
+    switch ((ValueType)v.type) {
+    case VAL_NIL: ADD("nil"); break;
+    case VAL_BOOL: ADD("%s", v.as.b ? "true" : "false"); break;
+    case VAL_INT: ADD("%d", (int)v.as.i); break;
+    case VAL_FN: ADD("fn %s", vm->prog.fns[v.as.index].name); break;
+    case VAL_NATIVE: ADD("built-in"); break;
+    case VAL_STR: {
+        const char *s;
+        uint32_t len;
+        if (jl_get_string(vm, v, &s, &len)) ADD("\"%.*s%s\"", (int)(len > 40 ? 40 : len), s, len > 40 ? "..." : "");
+        else ADD("<freed str>");
+        break;
+    }
+    case VAL_BUF: {
+        uint8_t *d;
+        uint32_t len;
+        if (heap_get(&vm->heap, v.as.ref, &d, &len) == HEAP_OK) ADD("buf #%u, %u bytes", (unsigned)v.as.ref.handle, (unsigned)len);
+        else ADD("<freed buf>");
+        break;
+    }
+    case VAL_ARR:
+    case VAL_STRUCT: {
+        Value *items;
+        uint32_t len;
+        if (heap_get(&vm->heap, v.as.ref, (uint8_t **)(void *)&items, &len) != HEAP_OK) {
+            ADD("<freed %s>", v.type == VAL_ARR ? "array" : "struct");
+            break;
+        }
+        len /= (uint32_t)sizeof(Value);
+        const StructDef *d = v.type == VAL_STRUCT ? &vm->prog.structs[v.tag] : NULL;
+        if (d) ADD("%.*s { ", (int)vm->prog.strs[d->name].len, vm->prog.strs[d->name].chars);
+        else ADD("[");
+        if (depth > 1) {
+            ADD("...");
+        } else {
+            for (uint32_t i = 0; i < len && i < 8; i++) {
+                if (i) ADD(", ");
+                if (d) ADD("%.*s: ", (int)vm->prog.strs[d->fields[i]].len, vm->prog.strs[d->fields[i]].chars);
+                if (n < size) n += show(vm, items[i], out + n, size - n, depth + 1);
+            }
+            if (len > 8) ADD(", ... %u more", (unsigned)(len - 8));
+        }
+        ADD(d ? " }" : "]");
+        break;
+    }
+    }
+#undef ADD
+    return n < size ? n : size - 1;
+}
+
+static void tvar(JlVM *vm, const char *name, size_t nlen, Value v, bool first) {
+    char text[256];
+    size_t n = show(vm, v, text, sizeof text, 0);
+    if (!first) tput(",", 1);
+    tput("[", 1);
+    tstr(name, nlen);
+    tput(",", 1);
+    tstr(text, n);
+    tput("]", 1);
+}
+
+static bool on_step(JlVM *vm, const JlStep *st, void *ud) {
+    (void)ud;
+    if (trace_full) return true;
+    if (st->line == trace_last_line && vm->frame_count == trace_last_depth) return true;
+    if (trace_steps == TRACE_STEPS) {
+        trace_full = true;
+        return true;
+    }
+    trace_last_line = st->line;
+    trace_last_depth = vm->frame_count;
+    char buf[96];
+    snprintf(buf, sizeof buf, "%s{\"line\":%d,\"out\":%u,\"heap\":%u,\"frames\":[", trace_steps ? "," : "",
+             st->line, (unsigned)printed, (unsigned)vm->heap.used_bytes);
+    tputs(buf);
+    trace_steps++;
+    /* the call stack, innermost call first */
+    for (int f = vm->frame_count - 1; f >= 0; f--) {
+        const CallFrame *fr = &vm->frames[f];
+        const Chunk *ch = &vm->prog.fns[fr->fn].chunk;
+        int off = (int)(fr->ip - ch->code);
+        Value *top = f == vm->frame_count - 1 ? vm->sp : vm->frames[f + 1].slots;
+        int line = ch->lines[off > 0 && f != vm->frame_count - 1 ? off - 1 : off];
+        snprintf(buf, sizeof buf, "%s{\"line\":%d,\"name\":", f == vm->frame_count - 1 ? "" : ",", line);
+        tputs(buf);
+        const char *fname = vm->prog.fns[fr->fn].name;
+        tstr(fname, strlen(fname));
+        tputs(",\"vars\":[");
+        bool first = true;
+        for (int i = 0; i < ch->var_count; i++) {
+            if (ch->vars[i].from > off || (ch->vars[i].to >= 0 && ch->vars[i].to <= off)) continue;
+            if (fr->slots + ch->vars[i].slot >= top) continue;
+            const StrConst *nm = &vm->prog.strs[ch->vars[i].name];
+            tvar(vm, nm->chars, nm->len, fr->slots[ch->vars[i].slot], first);
+            first = false;
+        }
+        tputs("]}");
+    }
+    tputs("],\"globals\":[");
+    bool first = true;
+    for (int g = 0; g < vm->global_count; g++) {
+        const Global *gl = &vm->globals[g];
+        if (!gl->defined || gl->value.type == VAL_NATIVE || gl->value.type == VAL_FN) continue;
+        tvar(vm, gl->name, (size_t)gl->len, gl->value, first);
+        first = false;
+    }
+    tputs("],\"blocks\":[");
+    uint32_t boff = 0;
+    BlockInfo bi;
+    first = true;
+    while (heap_next_block(&vm->heap, &boff, &bi)) {
+        if (!bi.used) continue;
+        snprintf(buf, sizeof buf, "%s[\"%s\",%u,%u,%u]", first ? "" : ",", heap_kind_name(bi.kind), (unsigned)bi.handle,
+                 (unsigned)bi.len, (unsigned)vm->heap.handles[bi.handle].alloc_line);
+        tputs(buf);
+        first = false;
+    }
+    tputs("]}");
+    return true;
+}
+
+EXPORT(jlw_trace) const char *jlw_trace(void) { return trace; }
+EXPORT(jlw_trace_len) size_t jlw_trace_len(void) { return trace_len; }
 
 static void write_err(void *ud, const char *d, size_t n) {
     (void)ud;
@@ -137,7 +325,9 @@ EXPORT(jlw_output_len) size_t jlw_output_len(void) { return out_len; }
 
 /*
  * mode:    0 = run, 1 = xray, 2 = dis, 3 = check,
- *          4 = RISC-V assembly, 5 = run on the RISC-V emulator
+ *          4 = RISC-V assembly, 5 = run on the RISC-V emulator,
+ *          6 = run, recording each line for the step debugger (jlw_trace),
+ *          7 = run on the emulator with the pipeline view
  * emits:   event names separated by '\n' (may be empty)
  * pins:    "4=1,5=0" (may be empty); "a1=3000" sets analog(1) and
  *          "d=42" sets distance()
@@ -148,6 +338,8 @@ EXPORT(jlw_run)
 int jlw_run(const char *src, int mode, const char *emits, const char *pins,
             const char *answer, uint32_t heap, int stats) {
     out_len = 0;
+    printed = 0;
+    trace_len = 0;
     truncated = false;
     frames_len = 0;
     vcd_len = 0;
@@ -197,7 +389,7 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     board_sim_register(vm, &opt);
 
     int code = 0;
-    if (mode == 4 || mode == 5) {
+    if (mode == 4 || mode == 5 || mode == 7) {
         const char *events[64];
         int nevents = 0;
         static char names[64][32];
@@ -238,9 +430,19 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
         run.frame_sink = on_frame;
         run.max_ms = SIM_SECONDS * 1000;
         run.vcd = vcd;
+        RvPipe *pipe = NULL;
+        if (mode == 7) {
+            pipe = rv_pipe_new(&img, 24);
+            run.trace = rv_pipe_step;
+            run.trace_ud = pipe;
+        }
         uint64_t cycles = 0;
         code = rv_run(&img, &run, &cycles);
         finish_vcd();
+        if (pipe) {
+            rv_pipe_report(pipe, &img, write_out, NULL);
+            rv_pipe_free(pipe);
+        }
         if (stats) {
             char msg[128];
             int m = snprintf(msg, sizeof msg, "RISC-V instructions executed: %llu, code size: %u bytes\n",
@@ -260,6 +462,15 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     }
 
     jl_set_trace(vm, mode == 1);
+    if (mode == 6) {
+        trace_len = 0;
+        trace_steps = 0;
+        trace_last_line = -1;
+        trace_last_depth = -1;
+        trace_full = false;
+        tputs("{\"steps\":[");
+        jl_set_step_hook(vm, on_step, NULL);
+    }
     JlResult r = jl_run_source(vm, src);
     if (r == JL_COMPILE_ERROR) code = 65;
     if (r == JL_RUNTIME_ERROR) code = 70;
@@ -291,6 +502,12 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     if (code != 65) {
         if (stats) jl_print_stats(vm);
         if (code == 0) jl_report_leaks(vm);
+    }
+    if (mode == 6) {
+        char end[48];
+        snprintf(end, sizeof end, "],\"complete\":%s}", trace_full ? "false" : "true");
+        trace_full = false;
+        tputs(end);
     }
     jl_free(vm);
     finish_vcd();

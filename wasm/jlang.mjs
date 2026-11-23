@@ -7,7 +7,7 @@
 // `frames` is null, or an ArrayBuffer with every led_show() frame; parseFrames()
 // splits it into { ms, w, h, rgb } objects.
 
-const MODES = { run: 0, xray: 1, dis: 2, check: 3, riscv: 4, emu: 5 }
+const MODES = { run: 0, xray: 1, dis: 2, check: 3, riscv: 4, emu: 5, debug: 6, pipeline: 7 }
 
 export async function loadJLang(source) {
   const stub = () => 0
@@ -74,13 +74,16 @@ export async function loadJLang(source) {
       if (last && last.stream === o.stream) last.text += o.text
       else merged.push({ ...o })
     }
+    // Step debugger snapshots (mode "debug"), as JSON text
+    const tlen = ex.jlw_trace_len()
+    const trace = opts.mode === "debug" && tlen ? dec.decode(new Uint8Array(ex.memory.buffer, ex.jlw_trace(), tlen)) : ""
     // The pins as a waveform, in VCD format
     const vlen = ex.jlw_vcd_len()
     const vcd = vlen ? dec.decode(new Uint8Array(ex.memory.buffer, ex.jlw_vcd(), vlen)) : ""
     // LED panel frames: a copy of the raw frame buffer (see parseFrames)
     const flen = ex.jlw_frames_len()
     const frames = flen ? new Uint8Array(ex.memory.buffer, ex.jlw_frames(), flen).slice().buffer : null
-    return { code, output: merged, frames, vcd }
+    return { code, output: merged, frames, vcd, trace }
   }
 
   return { run, version: "0.1.0" }

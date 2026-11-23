@@ -81,6 +81,15 @@ typedef struct {
     } *bounds;
     int bound_count;
     int bound_cap;
+    /* Which local variable is in which slot, over which stretch of code,
+       for the step debugger (like a C compiler's debug info). */
+    struct {
+        uint16_t name; /* string constant */
+        uint8_t slot;
+        int from, to;  /* code offsets; to = -1 until the end of the function */
+    } *vars;
+    int var_count;
+    int var_cap;
 } Chunk;
 
 typedef struct {
