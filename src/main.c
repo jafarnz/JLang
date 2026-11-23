@@ -42,6 +42,7 @@ typedef struct {
     bool listing;
     bool print_asm;
     const char *bin_path;
+    const char *vcd_path;
     const char *emits[MAX_EMITS];
     int emit_count;
     BoardSimOptions board;
@@ -74,11 +75,13 @@ static void usage(FILE *f) {
         "  --realtime                    make delay() actually wait; in a terminal,\n"
         "                                LED panel frames animate in place, in colour\n"
         "  --panel <w>x<h>               LED panel size (default 60x7)\n"
+        "  --vcd <file.vcd>              record every pin as a waveform for GTKWave\n"
         "  --stats                       print instruction counts and heap use\n"
         "  --no-leak-check               don't report unfreed memory at exit\n"
         "\n"
         "options for emu / build:\n"
-        "  --emit, --pin, --max-cycles   as for run (emu only)\n"
+        "  --emit, --pin, --max-cycles,  as for run (emu only)\n"
+        "  --vcd\n"
         "  --asm                         print the generated assembly instead of running\n"
         "  --listing                     print addresses and machine code for every instruction\n"
         "  -o <file.s>                   where build writes the assembly\n"
@@ -136,6 +139,8 @@ static bool parse_args(int argc, char **argv, Options *o) {
             o->print_asm = true;
         } else if (strcmp(a, "--bin") == 0 && has_value) {
             o->bin_path = argv[++i];
+        } else if (strcmp(a, "--vcd") == 0 && has_value) {
+            o->vcd_path = argv[++i];
         } else if (strcmp(a, "-o") == 0 && has_value) {
             o->out_path = argv[++i];
         } else if (strcmp(a, "--emit") == 0 && has_value) {
@@ -228,12 +233,18 @@ static JlVM *make_vm(const Options *o) {
     return vm;
 }
 
-static int run_file(const Options *o, bool xray) {
-    char *src = read_file(o->file);
+static bool save_vcd(const char *path, Vcd *vcd);
+
+static int run_file(const Options *opts, bool xray) {
+    char *src = read_file(opts->file);
     if (src == NULL) {
-        fprintf(stderr, "jlang: can't read '%s': %s\n", o->file, strerror(errno));
+        fprintf(stderr, "jlang: can't read '%s': %s\n", opts->file, strerror(errno));
         return EXIT_NOFILE;
     }
+    Options copy = *opts;
+    const Options *o = &copy;
+    Vcd *vcd = opts->vcd_path ? vcd_new() : NULL;
+    copy.board.vcd = vcd;
     JlVM *vm = make_vm(o);
     if (vm == NULL) {
         free(src);
@@ -267,7 +278,23 @@ static int run_file(const Options *o, bool xray) {
     fflush(stdout);
     jl_free(vm);
     free(src);
+    if (code != EXIT_COMPILE && !save_vcd(o->vcd_path, vcd) && code == 0) code = EXIT_USAGE;
+    vcd_free(vcd);
     return code;
+}
+
+/* Writes the --vcd file, if one was asked for. Returns false on failure. */
+static bool save_vcd(const char *path, Vcd *vcd) {
+    if (path == NULL || vcd == NULL) return true;
+    FILE *f = fopen(path, "w");
+    if (f == NULL) {
+        fprintf(stderr, "jlang: can't write '%s': %s\n", path, strerror(errno));
+        return false;
+    }
+    bool ok = vcd_write(vcd, f);
+    if (fclose(f) != 0) ok = false;
+    if (!ok) fprintf(stderr, "jlang: couldn't write all of '%s'\n", path);
+    return ok;
 }
 
 /* ---- jlang emu / jlang build (RISC-V) -------------------------------- */
@@ -339,9 +366,12 @@ static int native(const Options *o, bool emulate) {
             run.panel_w = o->board.panel_w;
             run.panel_h = o->board.panel_h;
             run.ansi_frames = o->board.realtime && isatty(STDOUT_FILENO);
+            run.vcd = o->vcd_path ? vcd_new() : NULL;
             uint64_t cycles = 0;
             code = rv_run(&img, &run, &cycles);
             fflush(stdout);
+            if (!save_vcd(o->vcd_path, run.vcd) && code == 0) code = EXIT_USAGE;
+            vcd_free(run.vcd);
             if (o->stats) {
                 fprintf(stderr, "--- stats ---\nRISC-V instructions executed: %llu\ncode size: %u bytes\n",
                         (unsigned long long)cycles, (unsigned)img.text_size);

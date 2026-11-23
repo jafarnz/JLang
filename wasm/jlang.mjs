@@ -73,10 +73,13 @@ export async function loadJLang(source) {
       if (last && last.stream === o.stream) last.text += o.text
       else merged.push({ ...o })
     }
+    // The pins as a waveform, in VCD format
+    const vlen = ex.jlw_vcd_len()
+    const vcd = vlen ? dec.decode(new Uint8Array(ex.memory.buffer, ex.jlw_vcd(), vlen)) : ""
     // LED panel frames: a copy of the raw frame buffer (see parseFrames)
     const flen = ex.jlw_frames_len()
     const frames = flen ? new Uint8Array(ex.memory.buffer, ex.jlw_frames(), flen).slice().buffer : null
-    return { code, output: merged, frames }
+    return { code, output: merged, frames, vcd }
   }
 
   return { run, version: "0.1.0" }

@@ -1,0 +1,24 @@
+$comment Written by jlang run --vcd. Open it with GTKWave. $end
+$timescale 1ms $end
+$scope module board $end
+$var wire 1 ! pin2 $end
+$var reg 7 " pin3_duty_percent $end
+$var reg 16 # pin7_tone_hz $end
+$var reg 8 $ pin9_servo_degrees $end
+$upscope $end
+$enddefinitions $end
+#0
+$dumpvars
+1!
+b0 "
+b0 #
+b0 $
+$end
+#10
+b110010 "
+b110111000 #
+#30
+b0 #
+b1011010 $
+0!
+#31

@@ -36,6 +36,16 @@ static struct {
     uint32_t led_xy;
 } sim;
 
+/* Records a signal for --vcd. Names look like "pin2" or "pin7_tone_hz". */
+static void trace(int pin, const char *what, int width, uint32_t v) {
+    if (!sim.opt.vcd) return;
+    char name[40];
+    if (pin < 0) snprintf(name, sizeof name, "%s", what);
+    else if (what[0]) snprintf(name, sizeof name, "pin%d_%s", pin, what);
+    else snprintf(name, sizeof name, "pin%d", pin);
+    vcd_change(sim.opt.vcd, sim.now_ms, name, width, v);
+}
+
 void board_sim_default_options(BoardSimOptions *o) {
     memset(o, 0, sizeof *o);
     for (int i = 0; i < SIM_PINS; i++) o->pin_inputs[i] = -1;
@@ -103,6 +113,7 @@ static bool sim_pin_write(JlVM *vm, int argc, Value *args, Value *out) {
         sim.level[pin] = level;
         jl_outf(vm, "[sim %6ums] pin %d -> %s\n", (unsigned)sim.now_ms, (int)pin, level ? "HIGH" : "LOW");
     }
+    trace(pin, "", 1, (uint32_t)level);
     return true;
 }
 
@@ -116,6 +127,7 @@ static bool sim_pin_read(JlVM *vm, int argc, Value *args, Value *out) {
     }
     int v = sim.opt.pin_inputs[pin];
     if (v < 0) v = sim.mode[pin] == MODE_IN_PULLUP ? 1 : 0; /* pull-up reads HIGH */
+    trace(pin, "in", 1, (uint32_t)v);
     *out = int_val(v);
     return true;
 }
@@ -214,6 +226,7 @@ static void set_level(JlVM *vm, int pin, int level) {
         sim.level[pin] = level;
         SIM_LOG("pin %d -> %s\n", pin, level ? "HIGH" : "LOW");
     }
+    trace(pin, "", 1, (uint32_t)level);
 }
 
 static bool sim_turn_on(JlVM *vm, int argc, Value *args, Value *out) {
@@ -247,6 +260,7 @@ static bool sim_brightness(JlVM *vm, int argc, Value *args, Value *out) {
     if (pct < 0 || pct > 100) return jl_error(vm, "brightness(): use a percentage from 0 to 100, got %d", (int)pct);
     sim.mode[pin] = MODE_OUT;
     SIM_LOG("pin %d brightness %d%%\n", (int)pin, (int)pct);
+    trace(pin, "duty_percent", 7, (uint32_t)pct);
     return true;
 }
 
@@ -254,6 +268,9 @@ static void log_color(JlVM *vm, int pin, int index, uint32_t rgb) {
     const char *name = jl_hw_color_name(rgb);
     char where[32] = "";
     if (index >= 0) snprintf(where, sizeof where, " LED %d", index);
+    char what[24] = "rgb";
+    if (index >= 0) snprintf(what, sizeof what, "led%d_rgb", index);
+    trace(pin, what, 24, rgb);
     if (name) SIM_LOG("pin %d%s colour -> %s (#%06X)\n", pin, where, name, (unsigned)rgb);
     else SIM_LOG("pin %d%s colour -> #%06X\n", pin, where, (unsigned)rgb);
 }
@@ -289,7 +306,9 @@ static bool play(JlVM *vm, const char *fn, int32_t pin, Value note, int32_t ms) 
     else if (note.type == VAL_STR && jl_get_string(vm, note, &s, &n))
         SIM_LOG("pin %d tone %d Hz (%.*s) for %d ms\n", (int)pin, (int)hz, (int)n, s, (int)ms);
     else SIM_LOG("pin %d tone %d Hz for %d ms\n", (int)pin, (int)hz, (int)ms);
+    trace(pin, "tone_hz", 16, (uint32_t)hz);
     advance_time((uint32_t)ms);
+    trace(pin, "tone_hz", 16, 0);
     return time_left(vm);
 }
 
@@ -313,6 +332,7 @@ static bool sim_servo(JlVM *vm, int argc, Value *args, Value *out) {
     if (!get_pin(vm, "servo", args[0], &pin) || !jl_get_int(vm, "servo", 2, args[1], &angle)) return false;
     if (angle < 0 || angle > 180) return jl_error(vm, "servo(): the angle must be 0 to 180 degrees, got %d", (int)angle);
     SIM_LOG("pin %d servo -> %d degrees\n", (int)pin, (int)angle);
+    trace(pin, "servo_degrees", 8, (uint32_t)angle);
     return true;
 }
 
@@ -326,6 +346,7 @@ static bool sim_pressed(JlVM *vm, int argc, Value *args, Value *out) {
     int level = sim.opt.pin_inputs[pin] < 0 ? 1 : sim.opt.pin_inputs[pin] != 0;
     int was = sim.last_pressed[pin] ? sim.last_pressed[pin] - 1 : 1;
     sim.last_pressed[pin] = level + 1;
+    trace(pin, "in", 1, (uint32_t)level);
     *out = bool_val(was == 1 && level == 0);
     return true;
 }
@@ -335,6 +356,7 @@ static bool sim_analog(JlVM *vm, int argc, Value *args, Value *out) {
     int32_t pin;
     if (!get_pin(vm, "analog", args[0], &pin)) return false;
     int v = sim.opt.analog_inputs[pin];
+    trace(pin, "analog", 12, (uint32_t)(v < 0 ? 2048 : v));
     *out = int_val(v < 0 ? 2048 : v);
     return true;
 }
@@ -343,7 +365,11 @@ static bool sim_distance(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
     int32_t trig, echo;
     if (!get_pin(vm, "distance", args[0], &trig) || !get_pin(vm, "distance", args[1], &echo)) return false;
+    trace(trig, "", 1, 1); /* a trigger pulse, then the echo comes back */
+    trace(echo, "", 1, 0);
     advance_time(1 + (uint32_t)sim.opt.distance_cm * 58 / 1000); /* the echo takes 58 us per cm */
+    trace(trig, "", 1, 0);
+    trace(-1, "distance_cm", 16, (uint32_t)sim.opt.distance_cm);
     *out = int_val(sim.opt.distance_cm);
     return true;
 }
@@ -372,6 +398,7 @@ static void panel_write(void *ud, const char *data, size_t len) { jl_outf((JlVM 
 static bool sim_led_show(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc, (void)args, (void)out;
     panel_show(&sim.panel, sim.now_ms, panel_write, vm);
+    trace(-1, "panel_frames", 16, (uint32_t)sim.panel.frames);
     return true;
 }
 
@@ -497,6 +524,7 @@ static bool mmio_write(JlVM *vm, uint32_t addr, uint32_t v) {
             int level = (v >> pin) & 1u;
             if (sim.mode[pin] == MODE_OUT && sim.level[pin] != level) {
                 jl_outf(vm, "[sim %6ums] pin %d -> %s\n", (unsigned)sim.now_ms, pin, level ? "HIGH" : "LOW");
+                trace(pin, "", 1, (uint32_t)level);
             }
             sim.level[pin] = level;
         }

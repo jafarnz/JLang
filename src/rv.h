@@ -82,6 +82,7 @@ typedef struct {
     JlFrameFn frame_sink;    /* if set, frames go here instead of being printed */
     void *frame_data;
     uint32_t max_ms;         /* stop once this much time has passed, 0 = never */
+    struct Vcd *vcd;         /* record pin changes for a waveform viewer, or NULL */
 } RvRunOptions;
 
 /* Runs an assembled image from symbol `_start`. Returns the exit code

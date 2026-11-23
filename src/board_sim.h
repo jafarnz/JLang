@@ -10,6 +10,7 @@
 
 #include "jlang.h"
 #include "panel.h"
+#include "vcd.h"
 
 #define SIM_PINS 40
 
@@ -25,6 +26,7 @@ typedef struct {
     JlFrameFn frame_sink;        /* also hand each frame to the host */
     void *frame_data;
     uint32_t max_ms;             /* stop once this much time has passed, 0 = never */
+    Vcd *vcd;                    /* record pin changes for a waveform viewer, or NULL */
 } BoardSimOptions;
 
 void board_sim_default_options(BoardSimOptions *o);

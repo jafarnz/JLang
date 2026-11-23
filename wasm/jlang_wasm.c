@@ -52,6 +52,37 @@ static void on_frame(void *ud, uint32_t ms, int w, int h, const uint32_t *rgb) {
 EXPORT(jlw_frames) const uint8_t *jlw_frames(void) { return frames; }
 EXPORT(jlw_frames_len) size_t jlw_frames_len(void) { return frames_len; }
 
+/* The pins as a waveform (VCD text), for the waveform view and download. */
+#define VCD_MAX (8u * 1024u * 1024u)
+static Vcd *vcd;
+static char *vcd_buf;
+static size_t vcd_len, vcd_cap;
+
+static void vcd_append(void *ud, const char *d, size_t n) {
+    (void)ud;
+    if (vcd_len + n > VCD_MAX) return;
+    if (vcd_len + n > vcd_cap) {
+        size_t cap = vcd_cap ? vcd_cap : 8192;
+        while (cap < vcd_len + n) cap *= 2;
+        char *b = realloc(vcd_buf, cap);
+        if (b == NULL) return;
+        vcd_buf = b;
+        vcd_cap = cap;
+    }
+    memcpy(vcd_buf + vcd_len, d, n);
+    vcd_len += n;
+}
+
+/* Turns the recorded changes into text once the run is over. */
+static void finish_vcd(void) {
+    if (vcd) vcd_emit(vcd, vcd_append, NULL);
+    vcd_free(vcd);
+    vcd = NULL;
+}
+
+EXPORT(jlw_vcd) const char *jlw_vcd(void) { return vcd_buf; }
+EXPORT(jlw_vcd_len) size_t jlw_vcd_len(void) { return vcd_len; }
+
 static char *out_buf;
 static size_t out_len, out_cap;
 static bool truncated;
@@ -118,6 +149,9 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     out_len = 0;
     truncated = false;
     frames_len = 0;
+    vcd_len = 0;
+    vcd_free(vcd);
+    vcd = vcd_new();
 
     JlConfig cfg;
     jl_default_config(&cfg);
@@ -137,6 +171,7 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     opt.print_frames = false; /* the page draws the frames */
     opt.frame_sink = on_frame;
     opt.max_ms = SIM_SECONDS * 1000;
+    opt.vcd = vcd;
     for (const char *p = pins; p != NULL && *p;) {
         char *end;
         if (*p == 'd' && p[1] == '=') { /* d=CM: what distance() measures */
@@ -199,8 +234,10 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
         run.err = write_err;
         run.frame_sink = on_frame;
         run.max_ms = SIM_SECONDS * 1000;
+        run.vcd = vcd;
         uint64_t cycles = 0;
         code = rv_run(&img, &run, &cycles);
+        finish_vcd();
         if (stats) {
             char msg[128];
             int m = snprintf(msg, sizeof msg, "RISC-V instructions executed: %llu, code size: %u bytes\n",
@@ -250,5 +287,6 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
         if (code == 0) jl_report_leaks(vm);
     }
     jl_free(vm);
+    finish_vcd();
     return code;
 }

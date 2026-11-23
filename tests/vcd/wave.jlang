@@ -1,0 +1,8 @@
+// Pins, PWM, a tone and a servo, for the --vcd golden test.
+turn_on(2)
+delay(10)
+brightness(3, 50)
+tone(7, "A4", 20)
+servo(9, 90)
+turn_off(2)
+delay(5)

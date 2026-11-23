@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "rv.h"
+#include "vcd.h"
 
 typedef struct {
     const RvImage *img;
@@ -94,6 +95,11 @@ static bool mmio_write(Cpu *c, uint32_t addr, uint32_t v) {
             int n = snprintf(buf, sizeof buf, "[sim %6ums] pin %d -> %s\n", (unsigned)c->now_ms, pin,
                              (v >> pin) & 1u ? "HIGH" : "LOW");
             write_out(c, buf, (size_t)n);
+            if (c->opt->vcd) {
+                char name[16];
+                snprintf(name, sizeof name, "pin%d", pin);
+                vcd_change(c->opt->vcd, c->now_ms, name, 1, (v >> pin) & 1u);
+            }
         }
         return true;
     }
