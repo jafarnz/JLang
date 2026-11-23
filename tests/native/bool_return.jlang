@@ -1,0 +1,6 @@
+// A function that returns comparisons returns bools, which print as true and false.
+fn positive(n) {
+    return n > 0
+}
+print(positive(3), positive(-3))
+// expect: true false

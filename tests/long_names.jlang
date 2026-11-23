@@ -1,0 +1,4 @@
+// Printing a function whose name is longer than any fixed buffer.
+fn a_function_with_a_name_long_enough_to_overflow_a_sixty_four_byte_buffer() { }
+print(a_function_with_a_name_long_enough_to_overflow_a_sixty_four_byte_buffer)
+// expect: <fn a_function_with_a_name_long_enough_to_overflow_a_sixty_four_byte_buffer>

@@ -1,0 +1,3 @@
+// Values of different types are never equal, in the VM and in native code.
+print(true == 1, nil == 0, false == 0, 1 == 1, true == true, nil == nil)
+// expect: false false false true true true

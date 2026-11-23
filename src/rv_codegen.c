@@ -57,6 +57,7 @@ typedef struct {
     /* string constants used */
     bool *str_used;
     bool *returns_nil; /* per function: every return gives nil */
+    bool *returns_bool; /* per function: every return gives a bool */
     bool local_set[256]; /* current function: slots assigned after their let */
     /* extra string literals made by the code generator */
     char **lits;
@@ -167,6 +168,38 @@ static Kind kind_of(uint8_t kind) {
     return k;
 }
 
+/* An int known for certain: a literal or the result of arithmetic. Plain
+ * K_INT can also be a value whose type isn't tracked, such as a variable
+ * declared without a value, so only these are compared by type. */
+#define CERTAIN 1
+static Kind top(Gen *g, int n);
+static Kind certain_int(void) { return (Kind){K_INT, CERTAIN}; }
+
+static bool not_a_number(Kind k) { return k.kind == K_BOOL || k.kind == K_NIL || k.kind == K_STR || k.kind == K_FN; }
+
+static const char *kind_name(Kind k) {
+    switch (k.kind) {
+    case K_BOOL: return "bool";
+    case K_NIL: return "nil";
+    case K_STR: return "str";
+    case K_FN: return "fn";
+    case K_NATIVE: return "built-in";
+    default: return "int";
+    }
+}
+
+/* Arithmetic only works on numbers. The VM checks this as the program
+ * runs; native code has no type at run time, so it must be known here. */
+static bool numbers_only(Gen *g, const char *op, int operands) {
+    Kind a = top(g, operands - 1), b = top(g, 0);
+    if (not_a_number(a) || (operands == 2 && not_a_number(b))) {
+        if (operands == 2) error(g, "can't use '%s' on %s and %s (it only works on ints)", op, kind_name(a), kind_name(b));
+        else error(g, "can't use '%s' on %s (it only works on ints)", op, kind_name(a));
+        return false;
+    }
+    return true;
+}
+
 static Kind top(Gen *g, int n) {
     if (g->depth - 1 - n < 0) return kind_of(K_INT);
     return g->kinds[g->depth - 1 - n];
@@ -184,6 +217,8 @@ static void push_reg(Gen *g, const char *reg) {
 /* Can a variable hold both? Strings and functions must stay strings and
  * functions, because print() and calls depend on knowing which they are. */
 static bool same_storage(Kind a, Kind b) {
+    /* bools are 0 and 1 in native code, so print() needs to know them too */
+    if ((a.kind == K_BOOL) != (b.kind == K_BOOL)) return false;
     bool sa = a.kind == K_STR || a.kind == K_FN || a.kind == K_NATIVE;
     bool sb = b.kind == K_STR || b.kind == K_FN || b.kind == K_NATIVE;
     if (!sa && !sb) return true;
@@ -199,7 +234,8 @@ static Kind merge(Kind a, Kind b) {
 /* The kind a variable read gives: exact only if it is never reassigned. */
 static Kind read_kind(Kind k, bool reassigned) {
     if (reassigned && (k.kind == K_STR || k.kind == K_FN)) k.index = DYNAMIC;
-    if (reassigned && (k.kind == K_BOOL || k.kind == K_NIL)) k.kind = K_INT;
+    if (reassigned && k.kind == K_NIL) k.kind = K_INT;
+    if (reassigned && k.kind == K_INT) k.index = 0;
     return k;
 }
 
@@ -601,7 +637,7 @@ static void gen_function(Gen *g, int fi) {
             if (v.type == VAL_INT) {
                 out(g, "    li t0, %d\n", (int)v.as.i);
                 push_reg(g, "t0");
-                push_kind(g, kind_of(K_INT));
+                push_kind(g, certain_int());
             } else if (v.type == VAL_STR) {
                 g->str_used[v.as.index] = true;
                 out(g, "    la t0, jl_str_%d\n", v.as.index);
@@ -649,8 +685,8 @@ static void gen_function(Gen *g, int fi) {
             int slot = ch->code[off + 1];
             if (slot < g->depth) {
                 if (!same_storage(g->kinds[slot], top(g, 0))) {
-                    error(g, "in native code a variable can't hold a string or function in one place "
-                             "and another kind of value in another");
+                    error(g, "in native code a variable keeps its type: this one holds a %s here and a %s elsewhere "
+                             "(run it with `jlang run` to mix them)", kind_name(top(g, 0)), kind_name(g->kinds[slot]));
                     break;
                 }
                 g->kinds[slot] = merge(g->kinds[slot], top(g, 0));
@@ -681,8 +717,8 @@ static void gen_function(Gen *g, int fi) {
                 break;
             }
             if (g->gkind_set[gi] && !same_storage(g->gkind[gi], k)) {
-                error(g, "in native code a variable can't hold a string or function in one place "
-                         "and another kind of value in another");
+                error(g, "in native code a variable keeps its type: this one holds a %s here and a %s elsewhere "
+                         "(run it with `jlang run` to mix them)", kind_name(k), kind_name(g->gkind[gi]));
                 break;
             }
             g->gkind[gi] = g->gkind_set[gi] ? merge(g->gkind[gi], k) : k;
@@ -702,25 +738,38 @@ static void gen_function(Gen *g, int fi) {
                          "heap); run it with `jlang run` instead");
                 break;
             }
+            if (!numbers_only(g, "+", 2)) break;
             binary(g, "add");
             pop_kinds(g, 2);
-            push_kind(g, kind_of(K_INT));
+            push_kind(g, certain_int());
             break;
-        case OP_SUB: binary(g, "sub"); pop_kinds(g, 2); push_kind(g, kind_of(K_INT)); break;
-        case OP_MUL: binary(g, "mul"); pop_kinds(g, 2); push_kind(g, kind_of(K_INT)); break;
+        case OP_SUB:
+        case OP_MUL:
+            if (!numbers_only(g, op == OP_SUB ? "-" : "*", 2)) break;
+            binary(g, op == OP_SUB ? "sub" : "mul");
+            pop_kinds(g, 2);
+            push_kind(g, certain_int());
+            break;
         case OP_DIV:
         case OP_MOD:
+            if (!numbers_only(g, op == OP_DIV ? "/" : "%", 2)) break;
             out(g, "    lw t1, -4(s1)\n");
             trap_unless(g, "bnez t1", op == OP_DIV ? "division by zero" : "modulo by zero");
             binary(g, op == OP_DIV ? "div" : "rem");
             pop_kinds(g, 2);
             push_kind(g, kind_of(K_INT));
             break;
-        case OP_BAND: binary(g, "and"); pop_kinds(g, 2); push_kind(g, kind_of(K_INT)); break;
-        case OP_BOR: binary(g, "or"); pop_kinds(g, 2); push_kind(g, kind_of(K_INT)); break;
-        case OP_BXOR: binary(g, "xor"); pop_kinds(g, 2); push_kind(g, kind_of(K_INT)); break;
+        case OP_BAND:
+        case OP_BOR:
+        case OP_BXOR:
+            if (!numbers_only(g, op == OP_BAND ? "&" : op == OP_BOR ? "|" : "^", 2)) break;
+            binary(g, op == OP_BAND ? "and" : op == OP_BOR ? "or" : "xor");
+            pop_kinds(g, 2);
+            push_kind(g, certain_int());
+            break;
         case OP_SHL:
         case OP_SHR:
+            if (!numbers_only(g, op == OP_SHL ? "<<" : ">>", 2)) break;
             out(g, "    lw t1, -4(s1)\n");
             trap_num_unless(g, "sltiu t2, t1, 32\n    bnez t2", "shift amount ", "t1", " is out of range (it must be 0..31)");
             binary(g, op == OP_SHL ? "sll" : "sra");
@@ -728,11 +777,13 @@ static void gen_function(Gen *g, int fi) {
             push_kind(g, kind_of(K_INT));
             break;
         case OP_NEG:
+            if (!numbers_only(g, "-", 1)) break;
             out(g, "    lw t0, -4(s1)\n    neg t0, t0\n    sw t0, -4(s1)\n");
             pop_kinds(g, 1);
             push_kind(g, kind_of(K_INT));
             break;
         case OP_BNOT:
+            if (!numbers_only(g, "~", 1)) break;
             out(g, "    lw t0, -4(s1)\n    not t0, t0\n    sw t0, -4(s1)\n");
             pop_kinds(g, 1);
             push_kind(g, kind_of(K_INT));
@@ -746,8 +797,8 @@ static void gen_function(Gen *g, int fi) {
         case OP_EQ:
         case OP_NE: {
             Kind ka = top(g, 1), kb = top(g, 0);
-            bool known_a = ka.kind == K_NIL || ka.kind == K_BOOL || ka.kind == K_STR || ka.kind == K_FN;
-            bool known_b = kb.kind == K_NIL || kb.kind == K_BOOL || kb.kind == K_STR || kb.kind == K_FN;
+            bool known_a = not_a_number(ka) || (ka.kind == K_INT && ka.index == CERTAIN);
+            bool known_b = not_a_number(kb) || (kb.kind == K_INT && kb.index == CERTAIN);
             if (known_a && known_b && ka.kind != kb.kind) {
                 /* values of different types are never equal */
                 out(g, "    li t0, %d\n    sw t0, -8(s1)\n    addi s1, s1, -4\n", op == OP_NE);
@@ -761,14 +812,21 @@ static void gen_function(Gen *g, int fi) {
             push_kind(g, kind_of(K_BOOL));
             break;
         }
-        case OP_LT: binary(g, "slt"); pop_kinds(g, 2); push_kind(g, kind_of(K_BOOL)); break;
+        case OP_LT:
+            if (!numbers_only(g, "<", 2)) break;
+            binary(g, "slt");
+            pop_kinds(g, 2);
+            push_kind(g, kind_of(K_BOOL));
+            break;
         case OP_GT:
+            if (!numbers_only(g, ">", 2)) break;
             out(g, "    lw t0, -8(s1)\n    lw t1, -4(s1)\n    slt t0, t1, t0\n    sw t0, -8(s1)\n    addi s1, s1, -4\n");
             pop_kinds(g, 2);
             push_kind(g, kind_of(K_BOOL));
             break;
         case OP_LE:
         case OP_GE:
+            if (!numbers_only(g, op == OP_LE ? "<=" : ">=", 2)) break;
             out(g, "    lw t0, -8(s1)\n    lw t1, -4(s1)\n    slt t0, %s\n    xori t0, t0, 1\n    sw t0, -8(s1)\n    addi s1, s1, -4\n",
                 op == OP_LE ? "t1, t0" : "t0, t1");
             pop_kinds(g, 2);
@@ -799,6 +857,21 @@ static void gen_function(Gen *g, int fi) {
         case OP_CALL: {
             int argc = ch->code[off + 1];
             Kind callee = top(g, argc);
+            if (callee.kind != K_NATIVE) {
+                /* Parameters are untyped words in native code, so only values
+                   that are the same whatever their type can be passed. */
+                bool ok = true;
+                for (int a = 0; a < argc && ok; a++) {
+                    Kind k = top(g, argc - 1 - a);
+                    if (k.kind == K_STR || k.kind == K_BOOL || k.kind == K_NIL) {
+                        error(g, "in native code, functions can only be given numbers and functions, but argument %d "
+                                 "is a %s (run it with `jlang run` to pass any value)",
+                              a + 1, kind_name(k));
+                        ok = false;
+                    }
+                }
+                if (!ok) break;
+            }
             if (callee.kind == K_NATIVE) {
                 gen_native_call(g, callee.index, argc);
             } else if (callee.kind == K_FN && callee.index != DYNAMIC) {
@@ -809,7 +882,7 @@ static void gen_function(Gen *g, int fi) {
                 }
                 out(g, "    call jl_fn_%d\n", callee.index);
                 pop_kinds(g, argc + 1);
-                push_kind(g, kind_of(g->returns_nil[callee.index] ? K_NIL : K_INT));
+                push_kind(g, kind_of(g->returns_nil[callee.index] ? K_NIL : g->returns_bool[callee.index] ? K_BOOL : K_INT));
             } else if (callee.kind == K_STR || callee.kind == K_BOOL || callee.kind == K_NIL) {
                 error(g, "this value can't be called (only functions can be called)");
             } else {
@@ -825,6 +898,13 @@ static void gen_function(Gen *g, int fi) {
             break;
         }
         case OP_RETURN:
+            if (fi != g->first_fn && !g->returns_nil[fi] &&
+                (top(g, 0).kind == K_STR || (top(g, 0).kind == K_BOOL && !g->returns_bool[fi]))) {
+                error(g, "in native code, functions can only return numbers, but this returns a %s "
+                         "(run it with `jlang run` to return any value)",
+                      kind_name(top(g, 0)));
+                break;
+            }
             out(g, "    lw t0, -4(s1)\n    sw t0, 0(s0)\n    addi s1, s0, 4\n");
             out(g, "    la t1, jl_depth\n    lw t2, 0(t1)\n    addi t2, t2, -1\n    sw t2, 0(t1)\n");
             out(g, "    lw ra, 12(sp)\n    lw s0, 8(sp)\n    addi sp, sp, 16\n    ret\n");
@@ -1062,10 +1142,20 @@ static void prescan(Gen *g, int first, int last) {
         Chunk *ch = &g->vm->prog.fns[fi].chunk;
         uint8_t prev = 0xFF;
         g->returns_nil[fi] = true;
+        /* A function returns bools if every return gives true, false or a
+           comparison; the caller then knows its result is a bool. */
+        bool any = false, all_bool = true;
         for (int off = 0; off < ch->count; off += op_size(ch->code[off])) {
-            if (ch->code[off] == OP_RETURN && prev != OP_NIL) g->returns_nil[fi] = false;
+            if (ch->code[off] == OP_RETURN && prev != OP_NIL) {
+                g->returns_nil[fi] = false;
+                any = true;
+                if (!(prev == OP_TRUE || prev == OP_FALSE || prev == OP_EQ || prev == OP_NE || prev == OP_LT ||
+                      prev == OP_LE || prev == OP_GT || prev == OP_GE || prev == OP_NOT || prev == OP_BOOL))
+                    all_bool = false;
+            }
             prev = ch->code[off];
         }
+        g->returns_bool[fi] = any && all_bool;
         for (int off = 0; off < ch->count; off += op_size(ch->code[off])) {
             uint8_t op = ch->code[off];
             if (op == OP_SET_GLOBAL) g->reassigned[ch->code[off + 1]] = true;
@@ -1095,6 +1185,7 @@ char *rv_generate(JlVM *vm, const char *source, const RvGenOptions *opt) {
     g->first_fn = first;
     g->str_used = calloc((size_t)vm->prog.str_count + 1, 1);
     g->returns_nil = calloc((size_t)vm->prog.fn_count + 1, 1);
+    g->returns_bool = calloc((size_t)vm->prog.fn_count + 1, 1);
     int last = vm->prog.fn_count;
     prescan(g, first, last);
 
@@ -1180,6 +1271,7 @@ char *rv_generate(JlVM *vm, const char *source, const RvGenOptions *opt) {
     free(g->lit_lens);
     free(g->str_used);
     free(g->returns_nil);
+    free(g->returns_bool);
     free(g);
     return result;
 }

@@ -454,14 +454,15 @@ static void print_value(JlVM *vm, Value v, bool to_err, int depth) {
         vm_write(vm, to_err, buf, (size_t)n);
         return;
     }
-    case VAL_FN: {
-        int n = snprintf(buf, sizeof buf, "<fn %s>", vm->prog.fns[v.as.index].name);
-        vm_write(vm, to_err, buf, (size_t)n);
-        return;
-    }
+    case VAL_FN:
     case VAL_NATIVE: {
-        int n = snprintf(buf, sizeof buf, "<built-in %s>", vm->natives[v.as.index].name);
-        vm_write(vm, to_err, buf, (size_t)n);
+        /* Names can be any length, so write them directly rather than
+           formatting them into buf. */
+        const char *name = v.type == VAL_FN ? vm->prog.fns[v.as.index].name : vm->natives[v.as.index].name;
+        const char *what = v.type == VAL_FN ? "<fn " : "<built-in ";
+        vm_write(vm, to_err, what, strlen(what));
+        vm_write(vm, to_err, name, strlen(name));
+        vm_write(vm, to_err, ">", 1);
         return;
     }
     }

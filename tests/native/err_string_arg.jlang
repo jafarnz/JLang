@@ -1,0 +1,7 @@
+// Native parameters are untyped words, so only numbers and functions can be passed.
+// exit: 65
+fn show(x) {
+    print(x)
+}
+show("hello")
+// expect: error (line 6): in native code, functions can only be given numbers and functions, but argument 1 is a str (run it with `jlang run` to pass any value)

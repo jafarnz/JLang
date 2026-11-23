@@ -1403,6 +1403,15 @@ static void report_undefined(Compiler *c) {
 }
 
 int jl_compile(JlVM *vm, const char *source) {
+    /* If this source doesn't compile, its declarations must not stay
+       behind: in the REPL, a line with an error and then the corrected
+       line would otherwise say the name is already declared. */
+    int globals_before = vm->global_count;
+    int structs_before = vm->prog.struct_count;
+    int named_before = vm->prog.named_count;
+    Global *saved = malloc((size_t)(globals_before ? globals_before : 1) * sizeof *saved);
+    if (saved) memcpy(saved, vm->globals, (size_t)globals_before * sizeof *saved);
+
     Compiler c;
     memset(&c, 0, sizeof c);
     c.vm = vm;
@@ -1431,5 +1440,13 @@ int jl_compile(JlVM *vm, const char *source) {
 
     if (!c.had_error) report_undefined(&c);
     if (c.errors > 10) vm_errf(vm, "... and %d more errors\n", c.errors - 10);
+    if (c.had_error && saved) {
+        for (int i = globals_before; i < vm->global_count; i++) free(vm->globals[i].name);
+        vm->global_count = globals_before;
+        memcpy(vm->globals, saved, (size_t)globals_before * sizeof *saved);
+        vm->prog.struct_count = structs_before;
+        vm->prog.named_count = named_before;
+    }
+    free(saved);
     return c.had_error ? -1 : fi;
 }

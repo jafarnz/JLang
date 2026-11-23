@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Differential test: every program that compiles to RISC-V must print
 # exactly what the bytecode VM prints. Programs that use features native
-# code doesn't have (the heap, the camera) are skipped.
+# code doesn't have (the heap, the camera, ...) are listed with the reason
+# in tests/native-skips.txt; any other native compile error is a failure.
 set -u
 BIN="${1:-build/jlang}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,8 +16,15 @@ for t in "$DIR"/tests/*.jlang "$DIR"/examples/*.jlang; do
     # shellcheck disable=SC2086
     native="$("$BIN" emu "$t" $args --max-cycles 50000000 2>&1)"
     ncode=$?
-    if [[ $ncode -eq 65 ]] && grep -q "isn't available in native code\|aren't available in native code\|isn't supported in native code\|must be written directly as a string literal\|can't hold a string" <<<"$native"; then
-        skip=$((skip + 1))
+    reason="$(awk -F'\t' -v n="$name" '$1 == n { print $2 }' "$DIR/tests/native-skips.txt")"
+    if [[ -n "$reason" ]]; then
+        if [[ $ncode -eq 65 ]] && grep -qF -- "$reason" <<<"$native"; then
+            skip=$((skip + 1))
+            continue
+        fi
+        fail=$((fail + 1))
+        echo "UNEXPECTED: $name is listed in tests/native-skips.txt ($reason), but native code gave:"
+        head -3 <<<"$native"
         continue
     fi
     # shellcheck disable=SC2086
@@ -38,7 +46,7 @@ for t in "$DIR"/tests/*.jlang "$DIR"/examples/*.jlang; do
         diff <(echo "$vm") <(echo "$native") | head -10
     fi
 done
-echo "native: $pass match the VM, $fail differ, $skip skipped (use the heap or camera)"
+echo "native: $pass match the VM, $fail differ, $skip skipped for the reasons in tests/native-skips.txt"
 
 # Native-only tests (inline assembly, registers, ...) with expected output.
 npass=0

@@ -1,0 +1,4 @@
+// Arithmetic on a bool is a compile error in native code, as it is a runtime error in the VM.
+// exit: 65
+print(true + 2)
+// expect: error (line 3): can't use '+' on bool and int (it only works on ints)

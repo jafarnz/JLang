@@ -1,0 +1,35 @@
+# Programs that don't compile to native code, and why. tests/native.sh skips
+# exactly these, and only when the native compile error contains the reason
+# given here; any other native compile error is a failure. Format:
+# path<TAB>part of the error message
+tests/arrays.jlang	arrays aren't available in native code yet (nati
+tests/board.jlang	capture() isn't available in native code yet (na
+tests/easy_hardware.jlang	turn_on() isn't available in native code yet; ru
+tests/err_array_bounds.jlang	arrays aren't available in native code yet (nati
+tests/err_bounds.jlang	alloc() isn't available in native code yet (nati
+tests/err_byte.jlang	alloc() isn't available in native code yet (nati
+tests/err_double_free.jlang	alloc() isn't available in native code yet (nati
+tests/err_easy_hardware.jlang	tone() isn't available in native code yet; run i
+tests/err_fragmented.jlang	alloc() isn't available in native code yet (nati
+tests/err_leak.jlang	alloc() isn't available in native code yet (nati
+tests/err_print_freed.jlang	joining strings with + isn't available in native
+tests/err_struct_field.jlang	structs aren't available in native code yet (nat
+tests/err_timer.jlang	every and after blocks aren't available in nativ
+tests/err_uaf_reused.jlang	alloc() isn't available in native code yet (nati
+tests/err_use_after_free.jlang	alloc() isn't available in native code yet (nati
+tests/fmt_pad.jlang	fmt() isn't available in native code yet; run it
+tests/i2c_spi.jlang	i2c_scan() isn't available in native code yet; r
+tests/memory.jlang	alloc() isn't available in native code yet (nati
+tests/panel_text.jlang	led_text() isn't available in native code yet; r
+tests/strings.jlang	len() isn't available in native code yet (native
+tests/strings_build.jlang	joining strings with + isn't available in native
+tests/structs.jlang	structs aren't available in native code yet (nat
+tests/timers.jlang	every and after blocks aren't available in nativ
+examples/clock.jlang	fmt() isn't available in native code yet; run it
+examples/graph.jlang	array() isn't available in native code yet; run 
+examples/iris.jlang	capture() isn't available in native code yet (na
+examples/life.jlang	random() isn't available in native code yet; run
+examples/packet.jlang	alloc() isn't available in native code yet (nati
+examples/parking.jlang	distance() isn't available in native code yet; r
+examples/party.jlang	in native code, functions can only be given numb
+examples/scroll.jlang	arrays aren't available in native code yet (nati

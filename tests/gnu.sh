@@ -20,8 +20,8 @@ for t in "$DIR"/tests/*.jlang "$DIR"/examples/*.jlang "$DIR"/tests/native/*.jlan
     riscv64-unknown-elf-as -march=rv32im_zicsr -mabi=ilp32 -mno-relax -o "$TMP/p.o" "$TMP/p.s" &&
         riscv64-unknown-elf-ld -m elf32lriscv -T "$TMP/layout.ld" -o "$TMP/p.elf" "$TMP/p.o" 2>/dev/null &&
         riscv64-unknown-elf-objcopy -O binary -R .bss "$TMP/p.elf" "$TMP/gnu.bin" || { fail=$((fail + 1)); continue; }
-    size=$(stat -c %s "$TMP/ours.bin" 2>/dev/null || stat -f %z "$TMP/ours.bin")
-    if cmp -s <(head -c "$size" "$TMP/gnu.bin") "$TMP/ours.bin"; then
+    # The whole image must match, including its length.
+    if cmp -s "$TMP/gnu.bin" "$TMP/ours.bin"; then
         pass=$((pass + 1))
     else
         fail=$((fail + 1))

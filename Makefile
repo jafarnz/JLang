@@ -20,6 +20,7 @@ test: $(BIN) build/glass_sim
 	@./tests/gnu.sh $(BIN)
 	@./tests/board.sh $(BIN)
 	@./tests/files.sh $(BIN)
+	@./tests/repl.sh $(BIN)
 	@./tests/glass.sh build/glass_sim
 
 # Build with AddressSanitizer + UndefinedBehaviorSanitizer and run the
@@ -30,6 +31,7 @@ sanitize:
 		-fno-omit-frame-pointer -o build/jlang-san $(SRC)
 	@./tests/run.sh build/jlang-san
 	@./tests/files.sh build/jlang-san
+	@./tests/repl.sh build/jlang-san
 	@./tests/native.sh build/jlang-san
 
 # WebAssembly build for the browser playground (needs clang + wasi-libc).
