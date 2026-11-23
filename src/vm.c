@@ -33,6 +33,7 @@ static void std_err(void *ud, const char *d, size_t n) {
 
 void vm_write(JlVM *vm, bool to_err, const char *data, size_t len) {
     if (vm->capturing && !to_err) {
+        if (len == 0) return; /* vm->cap may still be NULL */
         if (vm->cap_len + len > vm->cap_size) {
             size_t size = vm->cap_size ? vm->cap_size : 64;
             while (size < vm->cap_len + len) size *= 2;
