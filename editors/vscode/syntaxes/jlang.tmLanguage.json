@@ -59,13 +59,13 @@
     },
     "keywords": {
       "patterns": [
-        { "name": "keyword.control.jlang", "match": "\\b(if|else|while|for|in|return|break|continue|every|after)\\b" },
+        { "name": "keyword.control.jlang", "match": "\\b(if|else|match|while|for|in|return|break|continue|every|after)\\b" },
         { "name": "constant.language.jlang", "match": "\\b(true|false|nil)\\b" }
       ]
     },
     "builtins": {
       "name": "support.function.builtin.jlang",
-      "match": "\\b(print|printf|fmt|alloc|free|len|read16|read32|write16|write32|mem|memmap|u8|i8|u16|i16|assert|cycles|emit|pin_mode|pin_write|pin_read|delay|millis|capture|ask|speak|mmio_read32|mmio_write32|mmio_read8|mmio_write8|asm|random|map|clamp|rgb|array|turn_on|turn_off|toggle|brightness|color|color_at|tone|beep|servo|pressed|analog|distance|led|led_clear|led_show|led_text|led_width|led_height|led_size|stop_timer|i2c_scan|i2c_write|i2c_read|i2c_read16|spi_write|spi_transfer)\\b(?=\\s*\\()"
+      "match": "\\b(print|printf|fmt|alloc|free|len|read16|read32|write16|write32|mem|memmap|u8|i8|u16|i16|assert|cycles|emit|contains|starts_with|ends_with|slice|trim|pin_mode|pin_write|pin_read|delay|millis|capture|record|ask|speak|chime|kv_set|kv_get|kv_del|mmio_read32|mmio_write32|mmio_read8|mmio_write8|asm|random|map|clamp|rgb|array|turn_on|turn_off|toggle|brightness|color|color_at|tone|beep|servo|pressed|analog|distance|led|led_clear|led_show|led_text|led_width|led_height|led_size|stop_timer|i2c_scan|i2c_write|i2c_read|i2c_read16|spi_write|spi_transfer)\\b(?=\\s*\\()"
     },
     "calls": {
       "name": "entity.name.function.call.jlang",
@@ -74,7 +74,7 @@
     "operators": {
       "patterns": [
         { "name": "keyword.operator.range.jlang", "match": "\\.\\." },
-        { "name": "keyword.operator.jlang", "match": "<<=|>>=|<<|>>|&&|\\|\\||==|!=|<=|>=|[-+*/%&|^~!<>]=?|=" }
+        { "name": "keyword.operator.jlang", "match": "<<=|>>=|<<|>>|&&|\\|\\||==|!=|<=|>=|=>|[-+*/%&|^~!<>]=?|=" }
       ]
     }
   }
