@@ -24,6 +24,8 @@ typedef struct {
     bool declared; /* has a let/fn/built-in declaration */
     int use_line;  /* first use, to report undefined names */
     int use_col;
+    const char *use_src;  /* source text valid during jl_compile */
+    const char *use_file; /* filename valid during jl_compile, or NULL */
 } Global;
 
 typedef struct {
@@ -71,6 +73,10 @@ struct JlVM {
     JlWriteFn out;
     JlWriteFn err;
     void *user_data;
+
+    JlFileReader file_reader;
+    void *file_reader_ud;
+    const char *source_path;
 
     bool trace;
 

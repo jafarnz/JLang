@@ -1,0 +1,7 @@
+// Enum values are read-only compile-time constants.
+// exit: 65
+enum Mode { BUS, STUDY }
+Mode.BUS = 1
+// expect: error (line 4, col 10): enum values are constants and can't be changed
+// expect:      4 | Mode.BUS = 1
+// expect:        |          ^

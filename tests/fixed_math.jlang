@@ -1,0 +1,47 @@
+// Embedded fixed-point and saturating math (both VM and native RISC-V).
+print(abs(-42), abs(42), abs(0), abs(-2147483648))
+print(min(10, -3), max(10, -3), clamp(150, 0, 100), clamp(-5, 0, 100))
+
+// Saturating addition and subtraction: never wrap around!
+print(sat_add(2000000000, 2000000000))
+print(sat_add(-2000000000, -2000000000))
+print(sat_sub(-2000000000, 2000000000))
+print(sat_sub(0, -2147483648))
+
+// Q16.16 fixed-point: 1.0 = 65536, 1.5 = 98304, 2.5 = 163840
+let one = 65536
+let a = 98304    // 1.5
+let b = 163840   // 2.5
+// 1.5 * 2.5 = 3.75 = 245760
+print(fix_mul(a, b, 16))
+// -1.5 * 2.5 = -3.75 = -245760
+print(fix_mul(-a, b, 16))
+// Saturation on overflow
+print(fix_mul(2000000000, 2000000000, 16))
+print(fix_mul(-2000000000, 2000000000, 16))
+
+// Q16.16 division: 3.75 / 1.5 = 2.5 = 163840
+print(fix_div(245760, a, 16))
+print(fix_div(-245760, a, 16))
+print(fix_div(1000000000, 1, 16))
+print(fix_div(-1000000000, 1, 16))
+print(fix_div(-2147483648, -1, 0))
+print(fix_div(-2147483648, 1, 0))
+print(fix_div(0, -5, 16))
+// expect: 42 42 0 2147483647
+// expect: -3 10 100 0
+// expect: 2147483647
+// expect: -2147483648
+// expect: -2147483648
+// expect: 2147483647
+// expect: 245760
+// expect: -245760
+// expect: 2147483647
+// expect: -2147483648
+// expect: 163840
+// expect: -163840
+// expect: 2147483647
+// expect: -2147483648
+// expect: 2147483647
+// expect: -2147483648
+// expect: 0

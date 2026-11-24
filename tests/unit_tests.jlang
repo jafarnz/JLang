@@ -1,0 +1,32 @@
+// Built-in test blocks are skipped by jlang run and jlang emu,
+// and run in isolated VMs with leak checking by jlang test.
+fn add(a, b) { return a + b }
+
+let counter = 0
+fn bump() {
+    counter += 1
+    return counter
+}
+
+test "math and state isolation" {
+    assert(add(2, 3) == 5)
+    assert(bump() == 1)
+    assert(bump() == 2)
+}
+
+test "fresh globals and clock per test" {
+    assert(counter == 0)
+    assert(millis() == 0)
+    delay(250)
+    assert(millis() == 250)
+}
+
+test "heap cleanup with defer passes leak check" {
+    let b = alloc(32)
+    defer free(b)
+    b[0] = 42
+    assert(b[0] == 42)
+}
+
+print(add(10, 20))
+// expect: 30

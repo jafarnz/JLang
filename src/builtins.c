@@ -606,6 +606,99 @@ static bool bi_trim(JlVM *vm, int argc, Value *args, Value *out) {
     return jl_new_string(vm, s + lo, hi - lo, out);
 }
 
+/* compact(): defragment the heap by sliding all live blocks together.
+ * Returns the size in bytes of the single contiguous free block now available. */
+static bool bi_compact(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args;
+    *out = int_val((int32_t)heap_compact(&vm->heap));
+    return true;
+}
+
+static int32_t clamp_i32(int64_t v) {
+    if (v > INT32_MAX) return INT32_MAX;
+    if (v < INT32_MIN) return INT32_MIN;
+    return (int32_t)v;
+}
+
+static int64_t asr64(int64_t v, int k) {
+    if (k == 0) return v;
+    uint64_t u = (uint64_t)v;
+    uint64_t s = u >> k;
+    if (v < 0) s |= (~0ULL) << (64 - k);
+    return (int64_t)s;
+}
+
+static bool bi_abs(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t x;
+    if (!jl_get_int(vm, "abs", 1, args[0], &x)) return false;
+    *out = int_val(x == INT32_MIN ? INT32_MAX : (x < 0 ? -x : x));
+    return true;
+}
+
+static bool bi_min(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t a, b;
+    if (!jl_get_int(vm, "min", 1, args[0], &a) || !jl_get_int(vm, "min", 2, args[1], &b)) return false;
+    *out = int_val(a < b ? a : b);
+    return true;
+}
+
+static bool bi_max(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t a, b;
+    if (!jl_get_int(vm, "max", 1, args[0], &a) || !jl_get_int(vm, "max", 2, args[1], &b)) return false;
+    *out = int_val(a > b ? a : b);
+    return true;
+}
+
+static bool bi_sat_add(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t a, b;
+    if (!jl_get_int(vm, "sat_add", 1, args[0], &a) || !jl_get_int(vm, "sat_add", 2, args[1], &b)) return false;
+    *out = int_val(clamp_i32((int64_t)a + (int64_t)b));
+    return true;
+}
+
+static bool bi_sat_sub(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t a, b;
+    if (!jl_get_int(vm, "sat_sub", 1, args[0], &a) || !jl_get_int(vm, "sat_sub", 2, args[1], &b)) return false;
+    *out = int_val(clamp_i32((int64_t)a - (int64_t)b));
+    return true;
+}
+
+/* fix_mul(a, b, frac_bits): saturating (a * b) >> frac_bits using 64-bit intermediate. */
+static bool bi_fix_mul(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t a, b, frac;
+    if (!jl_get_int(vm, "fix_mul", 1, args[0], &a) || !jl_get_int(vm, "fix_mul", 2, args[1], &b) ||
+        !jl_get_int(vm, "fix_mul", 3, args[2], &frac))
+        return false;
+    if (frac < 0 || frac > 31) {
+        return jl_error(vm, "fix_mul(): fractional bits must be 0..31, got %d", (int)frac);
+    }
+    int64_t prod = (int64_t)a * (int64_t)b;
+    *out = int_val(clamp_i32(asr64(prod, frac)));
+    return true;
+}
+
+/* fix_div(a, b, frac_bits): saturating (a << frac_bits) / b using 64-bit intermediate. */
+static bool bi_fix_div(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t a, b, frac;
+    if (!jl_get_int(vm, "fix_div", 1, args[0], &a) || !jl_get_int(vm, "fix_div", 2, args[1], &b) ||
+        !jl_get_int(vm, "fix_div", 3, args[2], &frac))
+        return false;
+    if (frac < 0 || frac > 31) {
+        return jl_error(vm, "fix_div(): fractional bits must be 0..31, got %d", (int)frac);
+    }
+    if (b == 0) return jl_error(vm, "fix_div(): division by zero");
+    int64_t num = (int64_t)((uint64_t)(int64_t)a << frac);
+    *out = int_val(clamp_i32(num / (int64_t)b));
+    return true;
+}
+
 static bool bi_asm(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
     (void)args;
@@ -627,6 +720,7 @@ void jl_register_core(JlVM *vm) {
     jl_register_native(vm, "write32", bi_write32, 3);
     jl_register_native(vm, "mem", bi_mem, 0);
     jl_register_native(vm, "memmap", bi_memmap, 0);
+    jl_register_native(vm, "compact", bi_compact, 0);
     jl_register_native(vm, "u8", bi_u8, 1);
     jl_register_native(vm, "i8", bi_i8, 1);
     jl_register_native(vm, "u16", bi_u16, 1);
@@ -638,6 +732,13 @@ void jl_register_core(JlVM *vm) {
     jl_register_native(vm, "random", bi_random, 2);
     jl_register_native(vm, "map", bi_map, 5);
     jl_register_native(vm, "clamp", bi_clamp, 3);
+    jl_register_native(vm, "abs", bi_abs, 1);
+    jl_register_native(vm, "min", bi_min, 2);
+    jl_register_native(vm, "max", bi_max, 2);
+    jl_register_native(vm, "sat_add", bi_sat_add, 2);
+    jl_register_native(vm, "sat_sub", bi_sat_sub, 2);
+    jl_register_native(vm, "fix_mul", bi_fix_mul, 3);
+    jl_register_native(vm, "fix_div", bi_fix_div, 3);
     jl_register_native(vm, "stop_timer", bi_stop_timer, 0);
     jl_register_native(vm, "rgb", bi_rgb, 3);
     jl_register_native(vm, "array", bi_array, -1);

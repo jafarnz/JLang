@@ -211,6 +211,34 @@ uint32_t heap_largest_free(const Heap *h) {
     return best;
 }
 
+uint32_t heap_compact(Heap *h) {
+    uint32_t read_off = 0;
+    uint32_t write_off = 0;
+    while (read_off < h->cap) {
+        BlockHeader *src = hdr_at(h, read_off);
+        uint32_t total = HEAP_HDR + src->size;
+        if (src->used) {
+            if (write_off != read_off) {
+                memmove(h->mem + write_off, h->mem + read_off, total);
+                BlockHeader *dst = hdr_at(h, write_off);
+                h->handles[dst->handle].off = write_off;
+            }
+            write_off += total;
+        }
+        read_off += total;
+    }
+    if (write_off < h->cap) {
+        BlockHeader *tail = hdr_at(h, write_off);
+        tail->size = h->cap - write_off - HEAP_HDR;
+        tail->len = 0;
+        tail->handle = 0;
+        tail->used = 0;
+        tail->kind = 0;
+        return tail->size;
+    }
+    return 0;
+}
+
 const char *heap_kind_name(uint8_t kind) {
     return kind == BLOCK_STR ? "str" : kind == BLOCK_ARR ? "array" : kind == BLOCK_STRUCT ? "struct" : "buf";
 }

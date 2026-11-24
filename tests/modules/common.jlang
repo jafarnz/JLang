@@ -1,0 +1,14 @@
+const SCALE = 10
+
+enum Level {
+    LOW = 0,
+    HIGH = 1
+}
+
+fn twice(x) {
+    return x * 2
+}
+
+test "common internal test" {
+    assert(twice(3) == 6)
+}

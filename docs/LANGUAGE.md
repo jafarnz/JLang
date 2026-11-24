@@ -143,8 +143,28 @@ match mode {
 }
 ```
 
-`match` works on numbers, consts, strings, bools and `nil`, and compiles to
+`match` works on numbers, consts, enums, strings, bools and `nil`, and compiles to
 native RISC-V code as well as bytecode.
+
+`defer` schedules a statement or `{ ... }` block to run automatically when the
+current block or function exits, in reverse (last-in, first-out) order:
+
+```jlang
+fn read_sensor() {
+    pin_write(CS, 0)
+    defer pin_write(CS, 1)
+    let buf = alloc(32)
+    defer free(buf)
+    if pin_read(READY) == 0 {
+        return -1       // frees buf and raises CS automatically
+    }
+    return buf[0]
+}
+```
+
+`defer` runs on normal scope exit, `return` (after evaluating the return
+expression), `break` and `continue`. It works in both the VM and native RISC-V
+code.
 
 ## Functions
 
@@ -237,7 +257,10 @@ write16(buf, 4, 0xBEEF)
 read16(buf, 4)
 ```
 
-`mem()` prints heap usage; `memmap()` prints every block and free gap.
+`mem()` prints heap usage; `memmap()` prints every block and free gap;
+`compact()` slides every live block together into one contiguous prefix without
+invalidating any `buf`, `str`, `array` or `struct` handle, and returns the byte
+size of the single free block left at the end.
 
 ## Arrays
 
@@ -321,17 +344,59 @@ the ESP32 firmware. `stop_timer()` inside one stops it. One handler or timer
 runs at a time. Hosts drive timers with `jl_set_clock`, `jl_next_timer` and
 `jl_run_timers` (see `src/jlang.h`).
 
-## Consts
+## Consts and enums
 
 ```jlang
 const LED = 2
 const GPIO_OUT = 0x6009_1004
+
+enum Mode {
+    BUS,
+    STUDY,
+    ASK = 10,
+    QUIET
+}
 ```
 
 A `const` is a number the compiler puts wherever its name is used, so it takes
 no memory and works in native code. The value must be an int literal, a
-negative literal or another const. `jlang svd chip.svd` writes a chip's
-registers and bit fields as consts.
+negative literal, another const, or an enum value. `jlang svd chip.svd` writes
+a chip's registers and bit fields as consts.
+
+An `enum` defines scoped compile-time integer constants accessed with
+`Mode.BUS`. Members start at `0` and increment by `1` unless given an explicit
+integer value. Enum values take zero RAM and work in `match` arms, `const`
+declarations, and native RISC-V code.
+
+## Modules
+
+```jlang
+use "pins.jlang"
+use "../drivers/sensor.jlang"
+```
+
+`use` imports another `.jlang` file relative to the current file, at the top
+level only. Each file is imported at most once (diamond imports do not cause
+duplicate declarations), circular imports are rejected at compile time, and
+errors inside imported files report that file's name and line number. `use`
+works in `jlang run`, `check`, `test`, `emu`, `build`, `wcet`, `dis` and `xray`.
+
+## Built-in tests
+
+```jlang
+test "temperature scaling" {
+    assert(fix_mul(256, 384, 8) == 384)
+    assert(millis() == 0)
+    delay(100)
+    assert(millis() == 100)
+}
+```
+
+Top-level `test "name" { ... }` blocks are compiled and checked by `jlang check`,
+ignored by `jlang run`, omitted from native `jlang build` and `jlang emu`
+output (zero flash overhead), and executed by `jlang test <file...>`. Each test
+runs in a fresh isolated VM with reset globals, a fresh heap, virtual time at
+0 ms, and automatic memory-leak failure checking.
 
 ## Built-in functions
 
@@ -342,11 +407,17 @@ registers and bit fields as consts.
 | `fmt(fmt, ...)` | the text `printf` would print, as a new heap `str` you free |
 | `alloc(n)` | new `buf` of `n` zeroed bytes |
 | `free(x)` | free a `buf`, an array or a heap `str` |
+| `compact()` | slide live heap blocks together without invalidating handles; returns largest free block in bytes |
 | `len(x)` | size of a `buf` or `str` in bytes, or the number of items in an array |
 | `array(n)` / `array(n, v)` | a new array of `n` items, all 0 or all `v` |
 | `read16(buf, off)` / `read32(buf, off)` | read a little-endian 16/32-bit value |
 | `write16(buf, off, v)` / `write32(buf, off, v)` | write one |
 | `u8(v)` `i8(v)` `u16(v)` `i16(v)` | explicit-width conversions |
+| `abs(x)` | absolute value (clamps `INT32_MIN` to `INT32_MAX` instead of overflowing) |
+| `min(a, b)` / `max(a, b)` | smaller / larger of two ints |
+| `sat_add(a, b)` / `sat_sub(a, b)` | saturating 32-bit signed add and subtract |
+| `fix_mul(a, b, frac)` | fixed-point multiply `(a * b) >> frac` using 64-bit intermediate, saturating (`frac` 0..31) |
+| `fix_div(a, b, frac)` | fixed-point divide `(a << frac) / b` using 64-bit intermediate, saturating (`frac` 0..31) |
 | `mem()` | print heap statistics |
 | `memmap()` | print the heap layout |
 | `cycles()` | number of VM instructions executed so far |
@@ -386,6 +457,7 @@ device firmware provides the real ones with the same names.
 | `millis()` | milliseconds since start |
 | `capture()` | take a photo, returns a `buf` (JPEG) you must free |
 | `record(ms)` | record audio from the microphone (`1..30000` ms), returns a `buf` you must free (simulate with `--voice`) |
+| `record_start()` / `record_stop()` | start push-to-talk recording and stop on button release, returning the audio `buf` you must free |
 | `ask(photo_or_nil, prompt_or_audio[, instruction])` | ask the multimodal AI with an optional photo and a question string or recorded audio `buf`, returns a heap `str` you must free |
 | `speak(text, lang)` | say text aloud; `lang` defaults to `"en"` |
 | `chime(kind)` | play a short sound cue: `"ready"`, `"working"` or `"error"` |
@@ -395,10 +467,11 @@ device firmware provides the real ones with the same names.
 
 The simulated `ask()` replies with the text from `--answer` and takes 1.8 s of
 virtual time; `capture()` takes 150 ms; `record(ms)` captures the text from
-`--voice` and takes `ms`; `speak()` about 60 ms per character; `chime()` takes
-120 ms; `--kv key=val` pre-populates `kv_get()`. On the ESP32 firmware, the
-BOOT button fires `on button` (short press), `on button_hold` (held 600 ms or
-more) and `on button_release` (released).
+`--voice` and takes `ms`; `record_start()`/`record_stop()` simulate push-to-talk
+recording; `speak()` about 60 ms per character; `chime()` takes 120 ms;
+`--kv key=val` pre-populates `kv_get()`. On the ESP32 firmware, the BOOT button
+fires `on button` (short press), `on button_hold` (held 600 ms or more) and
+`on button_release` (released).
 
 ### Parts
 
@@ -476,7 +549,9 @@ found, `70` runtime error.
 
 `jlang emu` and `jlang build` compile a program to RISC-V machine code instead of running it on the VM. This is experimental and covers a subset of the language, with one rule: a program either behaves exactly as it does on the VM, or it is a compile error that says why. `tests/native.sh` checks every example and test program both ways, and `tests/native-skips.txt` lists, with the reason, the ones native code doesn't run.
 
-Native code has no heap and no types at run time; every value is a 32-bit word. So `alloc`, `free`, `len`, `read16`, `read32`, `write16`, `write32`, indexing strings, `mem`, `memmap`, `capture`, `ask`, `speak`, arrays, structs, string building, timers, the part built-ins, I2C and SPI, `led_text` and `led_size` are compile errors. Functions can be given only numbers and functions and can return only numbers or bools. Arithmetic on a bool, nil or string is a compile error, values of different types compare unequal, and a variable that holds a bool, string or function keeps that type. `led`, `led_clear`, `led_show`, `led_width`, `led_height` and `rgb` work, through the board's `jl_hal_led_*` functions. `jlang emu --pipeline` shows how a 5-stage pipeline runs the code, and `jlang wcet` the worst-case cycles of each handler. Two built-ins exist for native code:
+The native code generator keeps expression values in a 7-register cache (`t3`–`t6`, `a5`–`a7`), folds constant and immediate operations (`addi`, `andi`, `ori`, `xori`, `slli`, `srai`), and fuses comparisons with conditional branches into single RV32IM branch instructions. Native code supports `defer`, `enum`, `use`, `match`, `abs`, `min`, `max`, `clamp`, `sat_add`, `sat_sub`, `fix_mul` and `fix_div`, and skips `test` blocks with zero code size overhead.
+
+Native code has no heap and no types at run time; every value is a 32-bit word. So `alloc`, `free`, `compact`, `len`, `read16`, `read32`, `write16`, `write32`, indexing strings, `mem`, `memmap`, `capture`, `record`, `record_start`, `record_stop`, `ask`, `speak`, `kv_*`, arrays, structs, string building, timers, the part built-ins, I2C and SPI, `led_text` and `led_size` are compile errors. Functions can be given only numbers and functions and can return only numbers or bools. Arithmetic on a bool, nil or string is a compile error, values of different types compare unequal, and a variable that holds a bool, string or function keeps that type. `led`, `led_clear`, `led_show`, `led_width`, `led_height` and `rgb` work, through the board's `jl_hal_led_*` functions. `jlang emu --pipeline` shows how a 5-stage pipeline runs the code, and `jlang wcet` the worst-case cycles of each handler. Two built-ins exist for native code:
 
 | Function | Description |
 |---|---|

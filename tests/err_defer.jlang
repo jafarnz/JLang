@@ -1,0 +1,7 @@
+// exit: 65
+fn bad() {
+    defer { return 1 }
+}
+// expect: error (line 3, col 13): 'return' can't be used inside a defer
+// expect:      3 |     defer { return 1 }
+// expect:        |             ^

@@ -13,10 +13,8 @@ Where JLang is going, and work anyone can pick up. Comment on the matching issue
 
 ## The language
 
-- **Fixed-point numbers.** JLang has whole numbers only, like many microcontrollers. Helpers such as `fix_mul(a, b)` for numbers in hundredths would make sensor maths easier without adding floats. Medium.
-- **Modules.** Splitting a program across files with `use "sensors.jlang"`. Medium, and needs a design discussion first.
-- **`match`** on numbers and strings. Medium.
 - **Maps**, a fixed-capacity dictionary on the heap. Medium.
+- **Exhaustive `match` checks on `enum` values** so missing a state is a compile error. Medium.
 
 ## Hardware
 
@@ -31,7 +29,7 @@ Compiling to RISC-V covers a subset of the language today; see [tests/native-ski
 
 - **Arrays and structs in native code**, with a static heap. Large.
 - **Timers in native code**, using the chip's timer interrupts. Medium.
-- **A register allocator**, so values stay in registers instead of the stack in memory; `jlang emu --pipeline` shows how much it would save. Large.
+- **Cross-block local register promotion** (extending the current 7-register expression cache to keep loop locals in callee-saved registers across basic blocks). Medium.
 
 ## AI coding assistants
 

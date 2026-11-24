@@ -1,0 +1,77 @@
+// defer runs in LIFO order on block exit, early return, break and continue,
+// and works in both the VM and native RISC-V code.
+fn order_test(early) {
+    print("enter")
+    defer print("first")
+    defer {
+        print("second")
+    }
+    if early {
+        defer print("branch")
+        print("returning")
+        return 42
+    }
+    print("normal")
+    return 99
+}
+
+print("r1:", order_test(1))
+print("r2:", order_test(0))
+
+// Loop defer with continue and break.
+for i in 0..5 {
+    defer print("end", i)
+    if i == 1 {
+        continue
+    }
+    if i == 3 {
+        break
+    }
+    print("body", i)
+}
+
+// Nested block defer.
+{
+    let x = 10
+    defer print("outer", x)
+    {
+        let y = 20
+        defer print("inner", y)
+    }
+    print("after inner")
+}
+
+// Return expression is evaluated BEFORE defers run!
+let g = 5
+fn eval_before_defer() {
+    defer { g = 99 }
+    return g
+}
+print("before:", eval_before_defer(), "after:", g)
+
+// Top-level defer runs when the script finishes.
+defer print("done")
+print("main")
+// expect: enter
+// expect: returning
+// expect: branch
+// expect: second
+// expect: first
+// expect: r1: 42
+// expect: enter
+// expect: normal
+// expect: second
+// expect: first
+// expect: r2: 99
+// expect: body 0
+// expect: end 0
+// expect: end 1
+// expect: body 2
+// expect: end 2
+// expect: end 3
+// expect: inner 20
+// expect: after inner
+// expect: outer 10
+// expect: before: 5 after: 99
+// expect: main
+// expect: done

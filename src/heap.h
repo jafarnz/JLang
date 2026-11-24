@@ -95,6 +95,10 @@ const HandleEntry *heap_entry(const Heap *h, uint16_t handle);
 uint32_t heap_free_bytes(const Heap *h);
 uint32_t heap_largest_free(const Heap *h);
 
+/* Slide all live blocks together at offset 0 and merge free space into one block.
+ * Returns the size in bytes of the resulting contiguous free block. */
+uint32_t heap_compact(Heap *h);
+
 /* Walk every block. Start with *off = 0; returns false at the end. */
 bool heap_next_block(const Heap *h, uint32_t *off, BlockInfo *info);
 

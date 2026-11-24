@@ -1,0 +1,48 @@
+// args: --heap 400
+// Sliding heap compaction: defragments live buf, str, array and struct handles
+// without invalidating any reference (impossible with raw pointers in C).
+struct Pair { a, b }
+
+let b1 = alloc(100)
+b1[0] = 42
+b1[99] = 99
+
+let hole = alloc(100)
+let s = "hello " + "world"
+let arr = [10, 20, 30]
+let p = Pair { a: 7, b: 8 }
+
+// Freeing `hole` leaves fragmented free space (largest block = 100 bytes).
+free(hole)
+
+let avail = compact()
+assert(avail >= 120, "compact should reclaim a large contiguous block")
+
+// Allocate a block bigger than any pre-compaction free hole!
+let big = alloc(120)
+big[0] = 123
+big[119] = 234
+
+// Every surviving reference still resolves to its exact data!
+print(b1[0], b1[99])
+print(s)
+print(arr[0], arr[1], arr[2])
+print(p.a, p.b)
+print(big[0], big[119])
+
+free(big)
+free(p)
+free(arr)
+free(s)
+free(b1)
+
+// Compacting an empty heap merges everything back into a single block.
+let full = compact()
+assert(full == 388, "400-byte heap minus 12-byte header")
+print("full:", full)
+// expect: 42 99
+// expect: hello world
+// expect: 10 20 30
+// expect: 7 8
+// expect: 123 234
+// expect: full: 388

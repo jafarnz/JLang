@@ -1,0 +1,4 @@
+fn ok() { return 1 }
+fn broken() {
+    return nope_var
+}

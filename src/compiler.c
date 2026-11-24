@@ -56,6 +56,20 @@ typedef struct Loop {
     int continue_count;
 } Loop;
 
+#define MAX_DEFERS 64
+#define MAX_USE_DEPTH 16
+#define MAX_USED_FILES 128
+
+typedef struct {
+    Lexer lx;
+    Token cur;
+    Token prev;
+    const char *end;
+    const char *src;
+    const char *file_path;
+    int depth;
+} DeferEntry;
+
 /* State for the function currently being compiled. */
 typedef struct FnState {
     struct FnState *enclosing;
@@ -65,19 +79,33 @@ typedef struct FnState {
     int local_count;
     int scope_depth;
     Loop *loop;
+    DeferEntry defers[MAX_DEFERS];
+    int defer_count;
 } FnState;
 
 typedef struct {
     JlVM *vm;
     const char *src;
+    const char *file_path; /* NULL for root file, normalized path inside 'use' */
+    const char *base_path; /* normalized path of current file for relative 'use' */
+    bool in_use;
     Lexer lx;
     Token cur;
     Token prev;
     bool had_error;
     bool panic;
+    bool in_defer;
     int nesting; /* expressions and blocks inside each other */
     int errors;
     FnState *fs;
+
+    /* Header-free multi-file `use "path.jlang"` state. */
+    const char *use_stack[MAX_USE_DEPTH];
+    int use_depth;
+    char *used_files[MAX_USED_FILES];
+    int used_count;
+    char *owned_srcs[MAX_USED_FILES];
+    int owned_src_count;
 
     /* The most recent plain variable read. Lets `reg[3] = 1` write the
      * changed int back into the variable `reg`. */
@@ -104,31 +132,40 @@ static void parse_precedence(Compiler *c, Precedence prec);
 static void parse_precedence_inner(Compiler *c, Precedence prec);
 static const ParseRule *get_rule(TokenType type);
 static void declaration(Compiler *c);
+static void statement(Compiler *c);
 static void block(Compiler *c);
 
 /* ------------------------------------------------------------------ */
 /* Error reporting                                                     */
 /* ------------------------------------------------------------------ */
 
-static const char *line_start_of(const Compiler *c, int line) {
-    const char *p = c->src;
+static const char *line_start_in(const char *src, int line) {
+    const char *p = src;
     for (int l = 1; *p && l < line; p++) {
         if (*p == '\n') l++;
     }
     return p;
 }
 
+static const char *line_start_of(const Compiler *c, int line) {
+    return line_start_in(c->src, line);
+}
+
 /* Prints the source line and a ^ under the problem. */
-static void show_source(Compiler *c, int line, int col) {
-    const char *p = line_start_of(c, line);
+static void show_source_in(JlVM *vm, const char *src, int line, int col) {
+    const char *p = line_start_in(src, line);
     const char *e = p;
     while (*e && *e != '\n') e++;
-    vm_errf(c->vm, "  %4d | %.*s\n", line, (int)(e - p), p);
-    vm_errf(c->vm, "       | ");
+    vm_errf(vm, "  %4d | %.*s\n", line, (int)(e - p), p);
+    vm_errf(vm, "       | ");
     for (int i = 0; i < col - 1 && p + i < e; i++) {
-        vm_write(c->vm, true, p[i] == '\t' ? "\t" : " ", 1);
+        vm_write(vm, true, p[i] == '\t' ? "\t" : " ", 1);
     }
-    vm_errf(c->vm, "^\n");
+    vm_errf(vm, "^\n");
+}
+
+static void show_source(Compiler *c, int line, int col) {
+    show_source_in(c->vm, c->src, line, col);
 }
 
 static void error_at(Compiler *c, const Token *t, const char *msg) {
@@ -137,8 +174,16 @@ static void error_at(Compiler *c, const Token *t, const char *msg) {
     c->had_error = true;
     if (++c->errors > 10) return;
     if (t->type == TOK_EOF) {
-        vm_errf(c->vm, "error (line %d): %s (reached the end of the file)\n",
-                t->line, msg);
+        if (c->file_path) {
+            vm_errf(c->vm, "error (%s, line %d): %s (reached the end of the file)\n",
+                    c->file_path, t->line, msg);
+        } else {
+            vm_errf(c->vm, "error (line %d): %s (reached the end of the file)\n",
+                    t->line, msg);
+        }
+    } else if (c->file_path) {
+        vm_errf(c->vm, "error (%s, line %d, col %d): %s\n",
+                c->file_path, t->line, t->col, msg);
     } else {
         vm_errf(c->vm, "error (line %d, col %d): %s\n", t->line, t->col, msg);
     }
@@ -256,8 +301,46 @@ static void emit_loop(Compiler *c, int start) {
 
 static void begin_scope(Compiler *c) { c->fs->scope_depth++; }
 
+static void emit_defers(Compiler *c, int min_depth, bool pop) {
+    FnState *fs = c->fs;
+    int i = fs->defer_count;
+    while (i > 0 && fs->defers[i - 1].depth >= min_depth) {
+        DeferEntry d = fs->defers[--i];
+        Lexer saved_lx = c->lx;
+        Token saved_cur = c->cur;
+        Token saved_prev = c->prev;
+        const char *saved_src = c->src;
+        const char *saved_file = c->file_path;
+        bool saved_in = c->in_defer;
+        int saved_var_end = c->var_end;
+        Chunk *saved_add = c->add_chunk;
+
+        c->lx = d.lx;
+        c->lx.limit = d.end;
+        c->cur = d.cur;
+        c->prev = d.prev;
+        c->src = d.src;
+        c->file_path = d.file_path;
+        c->in_defer = true;
+        c->var_end = -1;
+        c->add_chunk = NULL;
+        statement(c);
+
+        c->lx = saved_lx;
+        c->cur = saved_cur;
+        c->prev = saved_prev;
+        c->src = saved_src;
+        c->file_path = saved_file;
+        c->in_defer = saved_in;
+        c->var_end = saved_var_end;
+        c->add_chunk = saved_add;
+    }
+    if (pop) fs->defer_count = i;
+}
+
 static void end_scope(Compiler *c) {
     FnState *fs = c->fs;
+    emit_defers(c, fs->scope_depth, true);
     fs->scope_depth--;
     while (fs->local_count > 0 &&
            fs->locals[fs->local_count - 1].depth > fs->scope_depth) {
@@ -358,6 +441,8 @@ static int global_use(Compiler *c, Token name) {
     if (!g->declared && g->use_line == 0) {
         g->use_line = name.line;
         g->use_col = name.col;
+        g->use_src = c->src;
+        g->use_file = c->file_path;
     }
     return i;
 }
@@ -693,6 +778,29 @@ static int find_named(Compiler *c, const char *name, int len) {
     return -1;
 }
 
+/* The enum called `name`, or -1. */
+static int find_enum(Compiler *c, const char *name, int len) {
+    const Program *p = &c->vm->prog;
+    for (int i = 0; i < p->enum_count; i++) {
+        const StrConst *s = &p->strs[p->enum_names[i]];
+        if ((int)s->len == len && memcmp(s->chars, name, (size_t)len) == 0) return i;
+    }
+    return -1;
+}
+
+static bool find_enum_member(Compiler *c, uint16_t enum_si, const char *name, int len, int32_t *out) {
+    const Program *p = &c->vm->prog;
+    for (int i = 0; i < p->enum_member_count; i++) {
+        if (p->enum_members[i].enum_name != enum_si) continue;
+        const StrConst *s = &p->strs[p->enum_members[i].member_name];
+        if ((int)s->len == len && memcmp(s->chars, name, (size_t)len) == 0) {
+            if (out) *out = p->enum_members[i].value;
+            return true;
+        }
+    }
+    return false;
+}
+
 static void variable(Compiler *c, bool can_assign) {
     Token name = c->prev;
     if (resolve_local(c, &name) < 0) {
@@ -703,6 +811,26 @@ static void variable(Compiler *c, bool can_assign) {
                 return;
             }
             emit_const(c, int_val(c->vm->prog.named[k].value));
+            return;
+        }
+        int e = find_enum(c, name.start, name.length);
+        if (e >= 0) {
+            uint16_t enum_si = c->vm->prog.enum_names[e];
+            consume(c, TOK_DOT, "expected '.' and a member name after an enum name");
+            if (c->panic) return;
+            consume(c, TOK_IDENT, "expected an enum member name after '.'");
+            if (c->panic) return;
+            Token mem = c->prev;
+            int32_t val = 0;
+            if (!find_enum_member(c, enum_si, mem.start, mem.length, &val)) {
+                errorf(c, "enum '%.*s' has no member '%.*s'", name.length, name.start, mem.length, mem.start);
+                return;
+            }
+            if (can_assign && (check(c, TOK_EQ) || is_compound(c->cur.type))) {
+                error_at_current(c, "enum values are constants and can't be changed");
+                return;
+            }
+            emit_const(c, int_val(val));
             return;
         }
     }
@@ -1054,23 +1182,47 @@ static void for_stmt(Compiler *c) {
 }
 
 static void return_stmt(Compiler *c) {
+    if (c->in_defer) {
+        error(c, "'return' can't be used inside a defer");
+        return;
+    }
     if (c->fs->is_script) {
         error(c, "'return' can only be used inside a function");
     }
     if (check(c, TOK_RBRACE)) {
+        if (c->fs->defer_count > 0) emit_defers(c, 1, false);
         emit(c, OP_NIL);
-    } else {
-        expression(c);
+        emit(c, OP_RETURN);
+        return;
+    }
+    expression(c);
+    if (c->fs->defer_count > 0) {
+        begin_scope(c);
+        Token ret_name = {TOK_IDENT, "(ret)", 5, c->prev.line, c->prev.col};
+        declare_local(c, ret_name);
+        mark_initialized(c);
+        int ret_slot = c->fs->local_count - 1;
+        emit_defers(c, 1, false);
+        emit2(c, OP_GET_LOCAL, (uint8_t)ret_slot);
+        emit(c, OP_RETURN);
+        c->fs->local_count--;
+        c->fs->scope_depth--;
+        return;
     }
     emit(c, OP_RETURN);
 }
 
 static void break_stmt(Compiler *c) {
+    if (c->in_defer) {
+        error(c, "'break' can't be used inside a defer");
+        return;
+    }
     Loop *loop = c->fs->loop;
     if (loop == NULL) {
         error(c, "'break' can only be used inside a loop");
         return;
     }
+    emit_defers(c, loop->depth + 1, false);
     pop_locals_deeper_than(c, loop->depth);
     if (loop->break_count == MAX_LOOP_JUMPS) {
         error(c, "too many 'break's in one loop");
@@ -1080,11 +1232,16 @@ static void break_stmt(Compiler *c) {
 }
 
 static void continue_stmt(Compiler *c) {
+    if (c->in_defer) {
+        error(c, "'continue' can't be used inside a defer");
+        return;
+    }
     Loop *loop = c->fs->loop;
     if (loop == NULL) {
         error(c, "'continue' can only be used inside a loop");
         return;
     }
+    emit_defers(c, loop->depth + 1, false);
     pop_locals_deeper_than(c, loop->depth);
     if (!loop->is_for) {
         emit_loop(c, loop->start);
@@ -1095,6 +1252,56 @@ static void continue_stmt(Compiler *c) {
         return;
     }
     loop->continues[loop->continue_count++] = emit_jump(c, OP_JUMP);
+}
+
+/* defer stmt  or  defer { ... }: runs in LIFO order when the current scope exits. */
+static void defer_stmt(Compiler *c) {
+    if (c->in_defer) {
+        error(c, "'defer' can't be nested inside another defer");
+        return;
+    }
+    if (c->fs->defer_count == MAX_DEFERS) {
+        error(c, "too many 'defer' statements in one function (max 64)");
+        return;
+    }
+    if (check(c, TOK_EOF) || check(c, TOK_RBRACE)) {
+        error_at_current(c, "expected a statement after 'defer', like: defer free(buf)");
+        return;
+    }
+    DeferEntry d;
+    d.lx = c->lx;
+    d.cur = c->cur;
+    d.prev = c->prev;
+    d.src = c->src;
+    d.file_path = c->file_path;
+    d.depth = c->fs->scope_depth;
+
+    if (check(c, TOK_LBRACE)) {
+        int braces = 0;
+        do {
+            if (check(c, TOK_LBRACE)) braces++;
+            else if (check(c, TOK_RBRACE)) braces--;
+            advance(c);
+        } while (braces > 0 && !check(c, TOK_EOF));
+        if (braces > 0) {
+            error(c, "expected '}' to close this defer block");
+            return;
+        }
+        d.end = c->prev.start + c->prev.length;
+    } else {
+        int start_line = c->cur.line;
+        int parens = 0, brackets = 0;
+        while (!check(c, TOK_EOF)) {
+            if (parens == 0 && brackets == 0 && (c->cur.line != start_line || check(c, TOK_RBRACE))) break;
+            if (check(c, TOK_LPAREN)) parens++;
+            else if (check(c, TOK_RPAREN) && parens > 0) parens--;
+            else if (check(c, TOK_LBRACKET)) brackets++;
+            else if (check(c, TOK_RBRACKET) && brackets > 0) brackets--;
+            advance(c);
+        }
+        d.end = c->prev.start + c->prev.length;
+    }
+    c->fs->defers[c->fs->defer_count++] = d;
 }
 
 /* match expr { 0 => { ... } 1, 2 => { ... } _ => { ... } } */
@@ -1173,6 +1380,8 @@ static void statement(Compiler *c) {
         if_stmt(c);
     } else if (match(c, TOK_MATCH)) {
         match_stmt(c);
+    } else if (match(c, TOK_DEFER)) {
+        defer_stmt(c);
     } else if (match(c, TOK_WHILE)) {
         while_stmt(c);
     } else if (match(c, TOK_FOR)) {
@@ -1207,17 +1416,9 @@ static void block(Compiler *c) {
 
 static bool at_top_level(const Compiler *c);
 
-/* const NAME = 42: a number with a name. The compiler puts the number
-   wherever the name is used, so it takes no memory, like #define in C. */
-static void const_decl(Compiler *c) {
-    if (!at_top_level(c)) error(c, "consts can only be declared at the top level of a file");
-    consume(c, TOK_IDENT, "expected a name after 'const', like: const LED = 2");
-    Token name = c->prev;
-    if (find_named(c, name.start, name.length) >= 0 || find_struct(c, name.start, name.length) >= 0) {
-        error(c, "this name is already taken");
-        return;
-    }
-    consume(c, TOK_EQ, "expected '=' and a number, like: const LED = 2");
+/* Parses a compile-time integer constant: an int literal, a const name, or
+   an Enum.MEMBER value, with optional leading '-'. */
+static bool parse_const_int(Compiler *c, int32_t *out, const char *err_msg) {
     bool neg = match(c, TOK_MINUS);
     int32_t v = 0;
     if (match(c, TOK_INT)) {
@@ -1231,17 +1432,49 @@ static void const_decl(Compiler *c) {
             chunk(c)->const_count = consts;
         }
     } else if (match(c, TOK_IDENT)) {
-        int k = find_named(c, c->prev.start, c->prev.length);
-        if (k < 0) {
-            error(c, "a const can only be a number or another const");
-            return;
+        Token tok = c->prev;
+        int k = find_named(c, tok.start, tok.length);
+        if (k >= 0) {
+            v = c->vm->prog.named[k].value;
+        } else {
+            int e = find_enum(c, tok.start, tok.length);
+            if (e < 0) {
+                error(c, err_msg);
+                return false;
+            }
+            uint16_t enum_si = c->vm->prog.enum_names[e];
+            consume(c, TOK_DOT, "expected '.' and a member name after an enum name");
+            if (c->panic) return false;
+            consume(c, TOK_IDENT, "expected an enum member name after '.'");
+            if (c->panic) return false;
+            if (!find_enum_member(c, enum_si, c->prev.start, c->prev.length, &v)) {
+                errorf(c, "enum '%.*s' has no member '%.*s'", tok.length, tok.start, c->prev.length, c->prev.start);
+                return false;
+            }
         }
-        v = c->vm->prog.named[k].value;
     } else {
-        error_at_current(c, "a const must be a number, like: const LED = 2");
-        return;
+        error_at_current(c, err_msg);
+        return false;
     }
     if (neg) v = (int32_t)(0u - (uint32_t)v);
+    *out = v;
+    return true;
+}
+
+/* const NAME = 42: a number with a name. The compiler puts the number
+   wherever the name is used, so it takes no memory, like #define in C. */
+static void const_decl(Compiler *c) {
+    if (!at_top_level(c)) error(c, "consts can only be declared at the top level of a file");
+    consume(c, TOK_IDENT, "expected a name after 'const', like: const LED = 2");
+    Token name = c->prev;
+    if (find_named(c, name.start, name.length) >= 0 || find_struct(c, name.start, name.length) >= 0 ||
+        find_enum(c, name.start, name.length) >= 0) {
+        error(c, "this name is already taken");
+        return;
+    }
+    consume(c, TOK_EQ, "expected '=' and a number, like: const LED = 2");
+    int32_t v = 0;
+    if (!parse_const_int(c, &v, "a const must be a number, another const, or an enum value")) return;
     Program *p = &c->vm->prog;
     if (p->named_count == p->named_cap) {
         p->named_cap = p->named_cap ? p->named_cap * 2 : 64;
@@ -1249,6 +1482,79 @@ static void const_decl(Compiler *c) {
     }
     p->named[p->named_count].name = (uint16_t)program_intern(p, name.start, (uint32_t)name.length);
     p->named[p->named_count++].value = v;
+}
+
+/* enum Mode { BUS, STUDY = 10, ASK }: scoped zero-RAM integer constants. */
+static void enum_decl(Compiler *c) {
+    if (!at_top_level(c)) error(c, "enums can only be declared at the top level of a file");
+    consume(c, TOK_IDENT, "expected a name after 'enum', like: enum Mode { BUS, STUDY }");
+    Token name = c->prev;
+    if (find_named(c, name.start, name.length) >= 0 || find_struct(c, name.start, name.length) >= 0 ||
+        find_enum(c, name.start, name.length) >= 0) {
+        error(c, "this name is already taken");
+        return;
+    }
+    int gi = vm_global_find(c->vm, name.start, name.length);
+    if (gi >= 0 && c->vm->globals[gi].declared) {
+        error(c, "this name is already taken");
+        return;
+    }
+    Program *p = &c->vm->prog;
+    int enum_si_i = program_intern(p, name.start, (uint32_t)name.length);
+    if (enum_si_i < 0 || enum_si_i > 0xFFFF) {
+        error(c, "too many names in one program");
+        return;
+    }
+    uint16_t enum_si = (uint16_t)enum_si_i;
+    consume(c, TOK_LBRACE, "expected '{' and then the enum member names");
+    int32_t next_val = 0;
+    int count = 0;
+    while (!check(c, TOK_RBRACE) && !check(c, TOK_EOF)) {
+        consume(c, TOK_IDENT, "expected an enum member name");
+        if (c->panic) {
+            skip_block(c);
+            return;
+        }
+        Token mem = c->prev;
+        if (find_enum_member(c, enum_si, mem.start, mem.length, NULL)) {
+            errorf(c, "enum member '%.*s' is listed twice", mem.length, mem.start);
+            skip_block(c);
+            return;
+        }
+        int32_t val = next_val;
+        if (match(c, TOK_EQ)) {
+            if (!parse_const_int(c, &val, "an enum value must be a number, const, or enum value")) {
+                skip_block(c);
+                return;
+            }
+        }
+        int mem_si_i = program_intern(p, mem.start, (uint32_t)mem.length);
+        if (mem_si_i < 0 || mem_si_i > 0xFFFF) {
+            error(c, "too many names in one program");
+            skip_block(c);
+            return;
+        }
+        if (p->enum_member_count == p->enum_member_cap) {
+            p->enum_member_cap = p->enum_member_cap ? p->enum_member_cap * 2 : 32;
+            p->enum_members = jl_xrealloc(p->enum_members, (size_t)p->enum_member_cap * sizeof *p->enum_members);
+        }
+        p->enum_members[p->enum_member_count].enum_name = enum_si;
+        p->enum_members[p->enum_member_count].member_name = (uint16_t)mem_si_i;
+        p->enum_members[p->enum_member_count++].value = val;
+        next_val = (int32_t)((uint32_t)val + 1u);
+        count++;
+        match(c, TOK_COMMA);
+    }
+    consume(c, TOK_RBRACE, "expected '}' after the enum members");
+    if (count == 0) {
+        error(c, "an enum needs at least one member");
+        return;
+    }
+    if (p->enum_count == p->enum_cap) {
+        p->enum_cap = p->enum_cap ? p->enum_cap * 2 : 16;
+        p->enum_names = jl_xrealloc(p->enum_names, (size_t)p->enum_cap * sizeof *p->enum_names);
+    }
+    p->enum_names[p->enum_count++] = enum_si;
 }
 
 static void let_decl(Compiler *c) {
@@ -1303,8 +1609,9 @@ static int compile_function(Compiler *c, const char *name, int len, bool has_par
     c->vm->prog.fns[fi].arity = arity;
 
     consume(c, TOK_LBRACE, has_params ? "expected '{' to start the function body"
-                                      : "expected '{' to start the event handler");
+                                      : "expected '{' to start the block");
     block(c);
+    emit_defers(c, 1, true);
     emit(c, OP_NIL);
     emit(c, OP_RETURN);
 
@@ -1348,13 +1655,231 @@ static void on_decl(Compiler *c) {
     emit(c, OP_ON);
 }
 
+/* Decode a TOK_STRING into a C buffer (strips quotes and handles \\ and \"). */
+static int decode_string_tok(const Token *t, char *out, size_t size) {
+    if (t->length < 2 || size == 0) return -1;
+    const char *s = t->start + 1;
+    int raw_len = t->length - 2;
+    size_t n = 0;
+    for (int i = 0; i < raw_len; i++) {
+        char ch = s[i];
+        if (ch == '\\' && i + 1 < raw_len) {
+            i++;
+            switch (s[i]) {
+            case 'n': ch = '\n'; break;
+            case 't': ch = '\t'; break;
+            case 'r': ch = '\r'; break;
+            case '"': ch = '"'; break;
+            case '\\': ch = '\\'; break;
+            default: ch = s[i]; break;
+            }
+        }
+        if (n + 1 >= size) return -1;
+        out[n++] = ch;
+    }
+    out[n] = '\0';
+    return (int)n;
+}
+
+/* test "name" { ... }: unit test block. Skipped by `jlang run`/`build`,
+   run in isolation with leak checking by `jlang test`. */
+static void test_decl(Compiler *c) {
+    if (!at_top_level(c)) error(c, "tests can only be declared at the top level of a file");
+    consume(c, TOK_STRING, "expected a test name string after 'test', like: test \"adds numbers\" { ... }");
+    if (c->panic) return;
+    char tname[128];
+    int tlen = decode_string_tok(&c->prev, tname, sizeof tname);
+    if (tlen <= 0) {
+        error(c, "a test name must be a non-empty string (at most 127 characters)");
+        return;
+    }
+    /* Tests inside imported `use` files belong to that file, not the caller. */
+    if (c->in_use) {
+        consume(c, TOK_LBRACE, "expected '{' to start the test block");
+        if (c->panic) return;
+        int braces = 1;
+        while (braces > 0 && !check(c, TOK_EOF)) {
+            if (check(c, TOK_LBRACE)) braces++;
+            else if (check(c, TOK_RBRACE)) braces--;
+            advance(c);
+        }
+        if (braces > 0) error(c, "expected '}' to close this test block");
+        return;
+    }
+    char fn_name[144];
+    snprintf(fn_name, sizeof fn_name, "test: %s", tname);
+    int fi = compile_function(c, fn_name, (int)strlen(fn_name), false);
+    if (fi < 0) return;
+    Program *p = &c->vm->prog;
+    p->fns[fi].is_test = true;
+    int si = program_intern(p, tname, (uint32_t)tlen);
+    if (si < 0 || si > 0xFFFF) {
+        error(c, "too many strings in one program");
+        return;
+    }
+    if (p->test_count == p->test_cap) {
+        p->test_cap = p->test_cap ? p->test_cap * 2 : 16;
+        p->tests = jl_xrealloc(p->tests, (size_t)p->test_cap * sizeof *p->tests);
+    }
+    p->tests[p->test_count].name = (uint16_t)si;
+    p->tests[p->test_count++].fn = fi;
+}
+
+/* Normalises a path with '/' separators, collapsing '.' and '..'. */
+static bool normalize_path(const char *raw, char *out, size_t size) {
+    char tmp[512];
+    size_t rlen = strlen(raw);
+    if (rlen >= sizeof tmp) return false;
+    for (size_t i = 0; i <= rlen; i++) tmp[i] = raw[i] == '\\' ? '/' : raw[i];
+    bool abs_path = tmp[0] == '/';
+    const char *segs[128];
+    int nseg = 0;
+    char *p = tmp;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        char *start = p;
+        while (*p && *p != '/') p++;
+        if (*p) *p++ = '\0';
+        if (strcmp(start, ".") == 0) continue;
+        if (strcmp(start, "..") == 0) {
+            if (nseg > 0 && strcmp(segs[nseg - 1], "..") != 0) nseg--;
+            else if (!abs_path && nseg < 128) segs[nseg++] = "..";
+        } else if (nseg < 128) {
+            segs[nseg++] = start;
+        }
+    }
+    size_t pos = 0;
+    if (abs_path) {
+        if (pos + 2 > size) return false;
+        out[pos++] = '/';
+    }
+    for (int i = 0; i < nseg; i++) {
+        size_t sl = strlen(segs[i]);
+        if (pos + sl + 2 > size) return false;
+        if (i > 0) out[pos++] = '/';
+        memcpy(out + pos, segs[i], sl);
+        pos += sl;
+    }
+    if (pos == 0) {
+        if (size < 2) return false;
+        out[pos++] = '.';
+    }
+    out[pos] = '\0';
+    return true;
+}
+
+static bool resolve_use_path(const char *base_path, const char *rel, char *out, size_t size) {
+    char combined[512];
+    if (rel[0] == '/' || rel[0] == '\\' || base_path == NULL) {
+        if (strlen(rel) >= sizeof combined) return false;
+        strcpy(combined, rel);
+    } else {
+        const char *slash = strrchr(base_path, '/');
+        const char *bslash = strrchr(base_path, '\\');
+        if (bslash && (!slash || bslash > slash)) slash = bslash;
+        if (slash != NULL) {
+            size_t dir_len = (size_t)(slash - base_path) + 1;
+            if (dir_len + strlen(rel) >= sizeof combined) return false;
+            memcpy(combined, base_path, dir_len);
+            strcpy(combined + dir_len, rel);
+        } else {
+            if (strlen(rel) >= sizeof combined) return false;
+            strcpy(combined, rel);
+        }
+    }
+    return normalize_path(combined, out, size);
+}
+
+/* use "relative/file.jlang": include-once module import with cycle detection. */
+static void use_decl(Compiler *c) {
+    if (!at_top_level(c)) {
+        error(c, "'use' can only be written at the top level of a file");
+        return;
+    }
+    consume(c, TOK_STRING, "expected a file path after 'use', like: use \"pins.jlang\"");
+    if (c->panic) return;
+    char rel[256];
+    int rlen = decode_string_tok(&c->prev, rel, sizeof rel);
+    if (rlen <= 0) {
+        error(c, "expected a non-empty file path after 'use'");
+        return;
+    }
+    if (c->vm->file_reader == NULL) {
+        error(c, "'use' is only available when compiling from files");
+        return;
+    }
+    char resolved[512];
+    if (!resolve_use_path(c->base_path, rel, resolved, sizeof resolved)) {
+        errorf(c, "file path '%s' is too long", rel);
+        return;
+    }
+    for (int i = 0; i < c->use_depth; i++) {
+        if (strcmp(c->use_stack[i], resolved) == 0) {
+            errorf(c, "circular 'use' of '%s'", resolved);
+            return;
+        }
+    }
+    for (int i = 0; i < c->used_count; i++) {
+        if (strcmp(c->used_files[i], resolved) == 0) return; /* include-once */
+    }
+    if (c->use_depth >= MAX_USE_DEPTH) {
+        error(c, "nested 'use' imports are too deep (max 16)");
+        return;
+    }
+    if (c->used_count >= MAX_USED_FILES) {
+        error(c, "too many 'use' imports in one program (max 128)");
+        return;
+    }
+    char *imported_src = c->vm->file_reader(c->vm->file_reader_ud, resolved);
+    if (imported_src == NULL) {
+        errorf(c, "can't read '%s'", resolved);
+        return;
+    }
+    size_t plen = strlen(resolved);
+    char *path_copy = jl_xrealloc(NULL, plen + 1);
+    memcpy(path_copy, resolved, plen + 1);
+    c->used_files[c->used_count++] = path_copy;
+    c->owned_srcs[c->owned_src_count++] = imported_src;
+    c->use_stack[c->use_depth++] = path_copy;
+
+    const char *saved_src = c->src;
+    const char *saved_file = c->file_path;
+    const char *saved_base = c->base_path;
+    bool saved_in_use = c->in_use;
+    Lexer saved_lx = c->lx;
+    Token saved_cur = c->cur;
+    Token saved_prev = c->prev;
+    int saved_var_end = c->var_end;
+
+    c->src = imported_src;
+    c->file_path = path_copy;
+    c->base_path = path_copy;
+    c->in_use = true;
+    c->var_end = -1;
+    lexer_init(&c->lx, imported_src);
+    advance(c);
+    while (!match(c, TOK_EOF)) declaration(c);
+
+    c->use_depth--;
+    c->src = saved_src;
+    c->file_path = saved_file;
+    c->base_path = saved_base;
+    c->in_use = saved_in_use;
+    c->lx = saved_lx;
+    c->cur = saved_cur;
+    c->prev = saved_prev;
+    c->var_end = saved_var_end;
+    c->panic = false;
+}
+
 /* struct Reading { temp, time }: a type with named fields. */
 static void struct_decl(Compiler *c) {
     if (!at_top_level(c)) error(c, "structs can only be declared at the top level of a file");
     consume(c, TOK_IDENT, "expected a name after 'struct', like: struct Reading { temp, time }");
     Token name = c->prev;
     Program *p = &c->vm->prog;
-    if (find_struct(c, name.start, name.length) >= 0) {
+    if (find_struct(c, name.start, name.length) >= 0 || find_enum(c, name.start, name.length) >= 0) {
         error(c, "there is already a struct with this name");
         return;
     }
@@ -1416,7 +1941,8 @@ static void synchronize(Compiler *c) {
     while (!check(c, TOK_EOF)) {
         switch (c->cur.type) {
         case TOK_LET: case TOK_FN: case TOK_ON: case TOK_EVERY: case TOK_AFTER: case TOK_STRUCT: case TOK_CONST:
-        case TOK_IF: case TOK_WHILE:
+        case TOK_ENUM: case TOK_USE: case TOK_TEST:
+        case TOK_IF: case TOK_MATCH: case TOK_DEFER: case TOK_WHILE:
         case TOK_FOR: case TOK_RETURN: case TOK_BREAK: case TOK_CONTINUE:
         case TOK_RBRACE: /* let the enclosing block close normally */
             return;
@@ -1435,6 +1961,12 @@ static void declaration(Compiler *c) {
         on_decl(c);
     } else if (match(c, TOK_CONST)) {
         const_decl(c);
+    } else if (match(c, TOK_ENUM)) {
+        enum_decl(c);
+    } else if (match(c, TOK_USE)) {
+        use_decl(c);
+    } else if (match(c, TOK_TEST)) {
+        test_decl(c);
     } else if (match(c, TOK_STRUCT)) {
         struct_decl(c);
     } else if (match(c, TOK_EVERY)) {
@@ -1474,8 +2006,13 @@ static void report_undefined(Compiler *c) {
         Global *g = &vm->globals[i];
         if (g->declared || g->use_line == 0) continue;
         c->had_error = true;
-        vm_errf(vm, "error (line %d, col %d): '%s' is not defined",
-                g->use_line, g->use_col, g->name);
+        if (g->use_file) {
+            vm_errf(vm, "error (%s, line %d, col %d): '%s' is not defined",
+                    g->use_file, g->use_line, g->use_col, g->name);
+        } else {
+            vm_errf(vm, "error (line %d, col %d): '%s' is not defined",
+                    g->use_line, g->use_col, g->name);
+        }
 
         const char *best = NULL;
         int best_d = 3;
@@ -1490,8 +2027,10 @@ static void report_undefined(Compiler *c) {
         }
         if (best) vm_errf(vm, " - did you mean '%s'?\n", best);
         else vm_errf(vm, " (declare it with let, or check the spelling)\n");
-        show_source(c, g->use_line, g->use_col);
+        show_source_in(vm, g->use_src ? g->use_src : c->src, g->use_line, g->use_col);
         g->use_line = 0;
+        g->use_src = NULL;
+        g->use_file = NULL;
     }
 }
 
@@ -1502,6 +2041,9 @@ int jl_compile(JlVM *vm, const char *source) {
     int globals_before = vm->global_count;
     int structs_before = vm->prog.struct_count;
     int named_before = vm->prog.named_count;
+    int enums_before = vm->prog.enum_count;
+    int enum_members_before = vm->prog.enum_member_count;
+    int tests_before = vm->prog.test_count;
     Global *saved = malloc((size_t)(globals_before ? globals_before : 1) * sizeof *saved);
     if (saved) memcpy(saved, vm->globals, (size_t)globals_before * sizeof *saved);
 
@@ -1510,12 +2052,23 @@ int jl_compile(JlVM *vm, const char *source) {
     c.vm = vm;
     c.src = source;
     c.var_end = -1;
+    char root_norm[512];
+    if (vm->source_path != NULL && normalize_path(vm->source_path, root_norm, sizeof root_norm)) {
+        size_t rlen = strlen(root_norm);
+        char *rcopy = jl_xrealloc(NULL, rlen + 1);
+        memcpy(rcopy, root_norm, rlen + 1);
+        c.base_path = rcopy;
+        c.used_files[c.used_count++] = rcopy;
+        c.use_stack[c.use_depth++] = rcopy;
+    }
     lexer_init(&c.lx, source);
 
     int fi = program_add_fn(&vm->prog, "<script>", 8);
     FnState *fs = calloc(1, sizeof *fs);
     if (fi < 0 || fs == NULL) {
         free(fs);
+        for (int i = 0; i < c.used_count; i++) free(c.used_files[i]);
+        free(saved);
         vm_errf(vm, "error: out of memory\n");
         return -1;
     }
@@ -1527,11 +2080,16 @@ int jl_compile(JlVM *vm, const char *source) {
 
     advance(&c);
     while (!match(&c, TOK_EOF)) declaration(&c);
+    emit_defers(&c, 0, true);
     emit(&c, OP_NIL);
     emit(&c, OP_RETURN);
     free(fs);
 
     if (!c.had_error) report_undefined(&c);
+    for (int i = 0; i < vm->global_count; i++) {
+        vm->globals[i].use_src = NULL;
+        vm->globals[i].use_file = NULL;
+    }
     if (c.errors > 10) vm_errf(vm, "... and %d more errors\n", c.errors - 10);
     if (c.had_error && saved) {
         for (int i = globals_before; i < vm->global_count; i++) free(vm->globals[i].name);
@@ -1539,7 +2097,12 @@ int jl_compile(JlVM *vm, const char *source) {
         memcpy(vm->globals, saved, (size_t)globals_before * sizeof *saved);
         vm->prog.struct_count = structs_before;
         vm->prog.named_count = named_before;
+        vm->prog.enum_count = enums_before;
+        vm->prog.enum_member_count = enum_members_before;
+        vm->prog.test_count = tests_before;
     }
+    for (int i = 0; i < c.owned_src_count; i++) free(c.owned_srcs[i]);
+    for (int i = 0; i < c.used_count; i++) free(c.used_files[i]);
     free(saved);
     return c.had_error ? -1 : fi;
 }

@@ -1,0 +1,12 @@
+test "passes cleanly" {
+    assert(1 + 1 == 2)
+}
+
+test "fails assertion" {
+    assert(1 == 2)
+}
+
+test "fails memory leak" {
+    let b = alloc(16)
+    b[0] = 1
+}

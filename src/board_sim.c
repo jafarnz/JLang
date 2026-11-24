@@ -40,6 +40,8 @@ static struct {
     char kv_keys[SIM_KV_MAX][SIM_KV_KEY_MAX];
     char kv_vals[SIM_KV_MAX][SIM_KV_VAL_MAX];
     int kv_count;
+    bool recording;
+    uint32_t rec_start_ms;
 } sim;
 
 /* Records a signal for --vcd. Names look like "pin2" or "pin7_tone_hz". */
@@ -182,13 +184,7 @@ static bool sim_capture(JlVM *vm, int argc, Value *args, Value *out) {
 }
 
 /* record(ms) -> buf holding a simulated microphone recording. Free it when done. */
-static bool sim_record(JlVM *vm, int argc, Value *args, Value *out) {
-    (void)argc;
-    int32_t ms;
-    if (!jl_get_int(vm, "record", 1, args[0], &ms)) return false;
-    if (ms <= 0 || ms > 30000) {
-        return jl_error(vm, "record(): duration must be 1 to 30000 ms, got %d", (int)ms);
-    }
+static bool make_voice_buf(JlVM *vm, Value *out, uint32_t *out_total) {
     const char *v = sim.opt.voice_text ? sim.opt.voice_text : "What is this?";
     size_t vlen = strlen(v);
     uint32_t total = (uint32_t)(4 + vlen);
@@ -196,8 +192,48 @@ static bool sim_record(JlVM *vm, int argc, Value *args, Value *out) {
     if (!jl_new_buf(vm, total, out, &data)) return false;
     memcpy(data, "JLAV", 4);
     memcpy(data + 4, v, vlen);
+    if (out_total) *out_total = total;
+    return true;
+}
+
+static bool sim_record(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t ms;
+    if (!jl_get_int(vm, "record", 1, args[0], &ms)) return false;
+    if (ms <= 0 || ms > 30000) {
+        return jl_error(vm, "record(): duration must be 1 to 30000 ms, got %d", (int)ms);
+    }
+    uint32_t total = 0;
+    if (!make_voice_buf(vm, out, &total)) return false;
     advance_time((uint32_t)ms);
     jl_outf(vm, "[sim %6ums] mic: recorded %d ms (%u bytes)\n", (unsigned)sim.now_ms, (int)ms, (unsigned)total);
+    return time_left(vm);
+}
+
+/* record_start() / record_stop(): push-to-talk microphone capture. */
+static bool sim_record_start(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args, (void)out;
+    if (sim.recording) return jl_error(vm, "record_start(): microphone is already recording");
+    sim.recording = true;
+    sim.rec_start_ms = sim.now_ms;
+    jl_outf(vm, "[sim %6ums] mic: recording started\n", (unsigned)sim.now_ms);
+    return true;
+}
+
+static bool sim_record_stop(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)args;
+    if (!sim.recording) return jl_error(vm, "record_stop(): microphone is not recording (call record_start() first)");
+    sim.recording = false;
+    uint32_t elapsed = sim.now_ms - sim.rec_start_ms;
+    if (elapsed == 0) {
+        /* Simulated press-and-release with no delay() in between. */
+        elapsed = 1200;
+        advance_time(elapsed);
+    }
+    uint32_t total = 0;
+    if (!make_voice_buf(vm, out, &total)) return false;
+    jl_outf(vm, "[sim %6ums] mic: recording stopped (%u ms, %u bytes)\n",
+            (unsigned)sim.now_ms, (unsigned)elapsed, (unsigned)total);
     return time_left(vm);
 }
 
@@ -920,6 +956,8 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     jl_register_native(vm, "millis", sim_millis, 0);
     jl_register_native(vm, "capture", sim_capture, 0);
     jl_register_native(vm, "record", sim_record, 1);
+    jl_register_native(vm, "record_start", sim_record_start, 0);
+    jl_register_native(vm, "record_stop", sim_record_stop, 0);
     jl_register_native(vm, "ask", sim_ask, -1);
     jl_register_native(vm, "speak", sim_speak, -1);
     jl_register_native(vm, "chime", sim_chime, 1);

@@ -54,8 +54,18 @@ JlResult jl_run_source(JlVM *vm, const char *source);
 JlResult jl_emit(JlVM *vm, const char *event);
 bool jl_has_handler(const JlVM *vm, const char *event);
 
+/* Optional file reader for `use "path.jlang"` imports. The callback must
+   return a malloc'd NUL-terminated string, or NULL if the file can't be read. */
+typedef char *(*JlFileReader)(void *user_data, const char *path);
+void jl_set_file_reader(JlVM *vm, const char *source_path, JlFileReader reader, void *user_data);
+
 /* Compile without running. With print = true, also show the bytecode. */
 JlResult jl_disassemble_or_check(JlVM *vm, const char *source, bool print);
+
+/* Built-in unit tests declared with `test "name" { ... }`. */
+int jl_test_count(const JlVM *vm);
+const char *jl_test_name(const JlVM *vm, int index);
+JlResult jl_run_test(JlVM *vm, int index);
 
 void jl_set_trace(JlVM *vm, bool on);
 

@@ -255,7 +255,7 @@ static void emit_registers(Gen *g, const char *periph, const XNode *regs, uint32
         if (dim < 1 || dim > 1024) dim = 1;
         for (long long i = 0; i < dim; i++) {
             char name[128];
-            char here[16];
+            char here[24];
             snprintf(here, sizeof here, "%lld", i);
             const char *idx = dim > 1 || strstr(raw, "%s") ? here : outer_idx;
             const char *pct = strstr(raw, "%s");

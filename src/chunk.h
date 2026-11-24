@@ -95,6 +95,7 @@ typedef struct {
 typedef struct {
     char *name;
     int arity;
+    bool is_test;
     Chunk chunk;
 } Function;
 
@@ -109,6 +110,19 @@ typedef struct {
     uint8_t field_count;
     uint16_t fields[JL_FIELDS_MAX];
 } StructDef;
+
+/* enum Mode { BUS, STUDY = 2 }: compile-time named integer constants. */
+typedef struct {
+    uint16_t enum_name;
+    uint16_t member_name;
+    int32_t value;
+} EnumMember;
+
+/* test "name" { ... }: run by `jlang test`, skipped by `jlang run`/`build`. */
+typedef struct {
+    uint16_t name;
+    int fn;
+} TestDef;
 
 /* Everything the compiler produced: functions and string constants. */
 typedef struct {
@@ -127,6 +141,15 @@ typedef struct {
     } *named;
     int named_count;
     int named_cap;
+    uint16_t *enum_names;
+    int enum_count;
+    int enum_cap;
+    EnumMember *enum_members;
+    int enum_member_count;
+    int enum_member_cap;
+    TestDef *tests;
+    int test_count;
+    int test_cap;
 } Program;
 
 void *jl_xrealloc(void *ptr, size_t size);

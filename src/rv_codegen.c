@@ -41,6 +41,14 @@ typedef struct {
 #define MAX_DEPTH 600
 #define DYNAMIC 0xFFFF /* kind index when the exact string or function isn't known */
 
+enum { V_MEM = 0, V_REG = 1, V_IMM = 2 };
+
+typedef struct {
+    uint8_t loc;
+    uint8_t reg;
+    int32_t imm;
+} VSlot;
+
 typedef struct {
     JlVM *vm;
     const RvGenOptions *opt;
@@ -74,7 +82,10 @@ typedef struct {
     int fn;
     int line;
     Kind kinds[MAX_DEPTH];
+    VSlot vstack[MAX_DEPTH];
     int depth;
+    int mem_depth; /* [0..mem_depth) live in memory at s0..s1; [mem_depth..depth) cached */
+    uint8_t reg_used; /* bitmask over REGS[0..6] */
 } Gen;
 
 /* ------------------------------------------------------------------ */
@@ -160,7 +171,10 @@ static void push_kind(Gen *g, Kind k) {
         error(g, "expression is too deep for native code");
         return;
     }
-    g->kinds[g->depth++] = k;
+    g->kinds[g->depth] = k;
+    g->vstack[g->depth].loc = V_MEM;
+    g->depth++;
+    g->mem_depth = g->depth;
 }
 
 static Kind kind_of(uint8_t kind) {
@@ -206,12 +220,182 @@ static Kind top(Gen *g, int n) {
 }
 
 static void pop_kinds(Gen *g, int n) {
-    g->depth -= n;
-    if (g->depth < 0) g->depth = 0;
+    for (int i = 0; i < n && g->depth > 0; i++) {
+        g->depth--;
+        if (g->vstack[g->depth].loc == V_REG) g->reg_used &= (uint8_t)~(1u << g->vstack[g->depth].reg);
+    }
+    if (g->mem_depth > g->depth) g->mem_depth = g->depth;
 }
 
-static void push_reg(Gen *g, const char *reg) {
-    out(g, "    sw %s, 0(s1)\n    addi s1, s1, 4\n", reg);
+static const char *const CACHE_REGS[7] = {"t3", "t4", "t5", "t6", "a5", "a6", "a7"};
+#define CACHE_COUNT 7
+
+static void free_reg(Gen *g, int r) {
+    if (r >= 0 && r < CACHE_COUNT) g->reg_used &= (uint8_t)~(1u << r);
+}
+
+/* Flush cached slots [g->mem_depth .. target) to the memory value stack (s1). */
+static void spill_to(Gen *g, int target) {
+    if (target > g->depth) target = g->depth;
+    if (target <= g->mem_depth) return;
+    int n = target - g->mem_depth;
+    for (int i = 0; i < n; i++) {
+        VSlot *v = &g->vstack[g->mem_depth + i];
+        int off = 4 * i;
+        if (v->loc == V_REG) {
+            out(g, "    sw %s, %d(s1)\n", CACHE_REGS[v->reg], off);
+            free_reg(g, v->reg);
+        } else if (v->loc == V_IMM) {
+            if (v->imm == 0) {
+                out(g, "    sw zero, %d(s1)\n", off);
+            } else {
+                out(g, "    li t0, %d\n    sw t0, %d(s1)\n", (int)v->imm, off);
+            }
+        }
+        v->loc = V_MEM;
+    }
+    out(g, "    addi s1, s1, %d\n", 4 * n);
+    g->mem_depth = target;
+}
+
+static void spill_all(Gen *g) { spill_to(g, g->depth); }
+
+static int alloc_reg(Gen *g) {
+    for (int i = 0; i < CACHE_COUNT; i++) {
+        if (!(g->reg_used & (1u << i))) {
+            g->reg_used |= (uint8_t)(1u << i);
+            return i;
+        }
+    }
+    /* All 7 cache registers are live: spill the oldest cached slot(s) until one frees up. */
+    while (g->mem_depth < g->depth) {
+        bool was_reg = g->vstack[g->mem_depth].loc == V_REG;
+        spill_to(g, g->mem_depth + 1);
+        if (was_reg) break;
+    }
+    for (int i = 0; i < CACHE_COUNT; i++) {
+        if (!(g->reg_used & (1u << i))) {
+            g->reg_used |= (uint8_t)(1u << i);
+            return i;
+        }
+    }
+    return 0;
+}
+
+static void vpush_reg(Gen *g, int reg, Kind k) {
+    if (g->depth >= MAX_DEPTH) {
+        error(g, "expression is too deep for native code");
+        return;
+    }
+    g->kinds[g->depth] = k;
+    g->vstack[g->depth].loc = V_REG;
+    g->vstack[g->depth].reg = (uint8_t)reg;
+    g->vstack[g->depth].imm = 0;
+    g->depth++;
+}
+
+static void vpush_imm(Gen *g, int32_t imm, Kind k) {
+    if (g->depth >= MAX_DEPTH) {
+        error(g, "expression is too deep for native code");
+        return;
+    }
+    g->kinds[g->depth] = k;
+    g->vstack[g->depth].loc = V_IMM;
+    g->vstack[g->depth].reg = 0;
+    g->vstack[g->depth].imm = imm;
+    g->depth++;
+}
+
+static void vpush_mem(Gen *g, Kind k) {
+    if (g->depth >= MAX_DEPTH) {
+        error(g, "expression is too deep for native code");
+        return;
+    }
+    g->kinds[g->depth] = k;
+    g->vstack[g->depth].loc = V_MEM;
+    g->depth++;
+    g->mem_depth = g->depth;
+}
+
+/* Pop top slot into a register without freeing its cache reg yet (caller frees *used_reg). */
+static const char *vpop_reg(Gen *g, const char *scratch, int *used_reg) {
+    *used_reg = -1;
+    if (g->depth <= 0) return "zero";
+    VSlot v = g->vstack[--g->depth];
+    if (v.loc == V_REG) {
+        *used_reg = v.reg;
+        return CACHE_REGS[v.reg];
+    }
+    if (v.loc == V_IMM) {
+        if (v.imm == 0) return "zero";
+        out(g, "    li %s, %d\n", scratch, (int)v.imm);
+        return scratch;
+    }
+    g->mem_depth = g->depth;
+    out(g, "    lw %s, -4(s1)\n    addi s1, s1, -4\n", scratch);
+    return scratch;
+}
+
+/* Pop top two slots (second into *ra, top into *rb). Coalesces double memory pop. */
+static void vpop_two(Gen *g, const char **ra, const char **rb, int *fa, int *fb) {
+    *fa = -1;
+    *fb = -1;
+    if (g->depth >= 2 && g->vstack[g->depth - 1].loc == V_MEM && g->vstack[g->depth - 2].loc == V_MEM) {
+        g->depth -= 2;
+        g->mem_depth = g->depth;
+        out(g, "    lw t0, -8(s1)\n    lw t1, -4(s1)\n    addi s1, s1, -8\n");
+        *ra = "t0";
+        *rb = "t1";
+        return;
+    }
+    *rb = vpop_reg(g, "t1", fb);
+    *ra = vpop_reg(g, "t0", fa);
+}
+
+/* Peek top slot into a register (does not pop). */
+static const char *vpeek_reg(Gen *g, const char *scratch) {
+    if (g->depth <= 0) return "zero";
+    VSlot v = g->vstack[g->depth - 1];
+    if (v.loc == V_REG) return CACHE_REGS[v.reg];
+    if (v.loc == V_IMM) {
+        if (v.imm == 0) return "zero";
+        out(g, "    li %s, %d\n", scratch, (int)v.imm);
+        return scratch;
+    }
+    out(g, "    lw %s, -4(s1)\n", scratch);
+    return scratch;
+}
+
+static int reuse_or_alloc(Gen *g, int fa, int fb) {
+    if (fa >= 0) {
+        free_reg(g, fb);
+        return fa;
+    }
+    if (fb >= 0) {
+        return fb;
+    }
+    return alloc_reg(g);
+}
+
+static bool fits_imm12(int32_t v) { return v >= -2048 && v <= 2047; }
+
+static int pow2_shift(int32_t v) {
+    if (v <= 0 || (v & (v - 1)) != 0) return -1;
+    int s = 0;
+    while ((v >> s) != 1) s++;
+    return s;
+}
+
+/* Emit branch to .L<fi>_<target_off> when condition (bop r1, r2) holds. */
+static void emit_cond_branch(Gen *g, const char *bop, const char *inv_bop,
+                             const char *r1, const char *r2, int fi, int target_off, int cur_off) {
+    int dist = target_off > cur_off ? target_off - cur_off : cur_off - target_off;
+    if (dist < 200) {
+        out(g, "    %s %s, %s, .L%d_%d\n", bop, r1, r2, fi, target_off);
+    } else {
+        int skip = new_label(g);
+        out(g, "    %s %s, %s, .Lok%d\n    j .L%d_%d\n.Lok%d:\n", inv_bop, r1, r2, skip, fi, target_off, skip);
+    }
 }
 
 /* Can a variable hold both? Strings and functions must stay strings and
@@ -473,6 +657,50 @@ static void gen_native_call(Gen *g, int native, int argc) {
         out(g, "    lw a0, %d(s1)\n    slli a0, a0, %d\n    %s a0, a0, %d\n", arg_off(argc, 0), bits,
             name[0] == 'u' ? "srli" : "srai", bits);
         result_in_a0 = true;
+    } else if (strcmp(name, "abs") == 0) {
+        int notmin = new_label(g), done = new_label(g);
+        out(g, "    lw a0, %d(s1)\n    li t0, -2147483648\n    bne a0, t0, .Lok%d\n    li a0, 2147483647\n    j .Lok%d\n"
+               ".Lok%d:\n    bgez a0, .Lok%d\n    neg a0, a0\n.Lok%d:\n",
+            arg_off(argc, 0), notmin, done, notmin, done, done);
+        result_in_a0 = true;
+    } else if (strcmp(name, "min") == 0 || strcmp(name, "max") == 0) {
+        int done = new_label(g);
+        out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n    %s, .Lok%d\n    mv a0, a1\n.Lok%d:\n",
+            arg_off(argc, 0), arg_off(argc, 1), name[1] == 'i' ? "bge a1, a0" : "bge a0, a1", done, done);
+        result_in_a0 = true;
+    } else if (strcmp(name, "clamp") == 0) {
+        int oklo = new_label(g), okhi = new_label(g);
+        out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n    lw a2, %d(s1)\n",
+            arg_off(argc, 0), arg_off(argc, 1), arg_off(argc, 2));
+        trap_unless(g, "bge a2, a1", "clamp(): the low limit is bigger than the high limit");
+        out(g, "    bge a0, a1, .Lok%d\n    mv a0, a1\n.Lok%d:\n    bge a2, a0, .Lok%d\n    mv a0, a2\n.Lok%d:\n",
+            oklo, oklo, okhi, okhi);
+        result_in_a0 = true;
+    } else if (strcmp(name, "sat_add") == 0 || strcmp(name, "sat_sub") == 0) {
+        int done = new_label(g);
+        out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n", arg_off(argc, 0), arg_off(argc, 1));
+        if (name[4] == 'a') {
+            out(g, "    add t0, a0, a1\n    xor t1, a0, t0\n    xor t2, a1, t0\n    and t1, t1, t2\n");
+        } else {
+            out(g, "    sub t0, a0, a1\n    xor t1, a0, a1\n    xor t2, a0, t0\n    and t1, t1, t2\n");
+        }
+        out(g, "    bgez t1, .Lok%d\n    li t0, 2147483647\n    bgez a0, .Lok%d\n    li t0, -2147483648\n"
+               ".Lok%d:\n    mv a0, t0\n",
+            done, done, done);
+        result_in_a0 = true;
+    } else if (strcmp(name, "fix_mul") == 0) {
+        out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n    lw a2, %d(s1)\n",
+            arg_off(argc, 0), arg_off(argc, 1), arg_off(argc, 2));
+        trap_num_unless(g, "sltiu t0, a2, 32\n    bnez t0", "fix_mul(): fractional bits must be 0..31, got ", "a2", "");
+        out(g, "    call jl_rt_fix_mul\n");
+        result_in_a0 = true;
+    } else if (strcmp(name, "fix_div") == 0) {
+        out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n    lw a2, %d(s1)\n",
+            arg_off(argc, 0), arg_off(argc, 1), arg_off(argc, 2));
+        trap_num_unless(g, "sltiu t0, a2, 32\n    bnez t0", "fix_div(): fractional bits must be 0..31, got ", "a2", "");
+        trap_unless(g, "bnez a1", "fix_div(): division by zero");
+        out(g, "    call jl_rt_fix_div\n");
+        result_in_a0 = true;
     } else if (strcmp(name, "assert") == 0) {
         if (argc < 1 || argc > 2) {
             error(g, "assert() takes 1 or 2 arguments");
@@ -570,8 +798,96 @@ static int jump_target(const Chunk *ch, int off) {
     return op == OP_LOOP ? off + 3 - d : off + 3 + d;
 }
 
-static void binary(Gen *g, const char *insn) {
-    out(g, "    lw t0, -8(s1)\n    lw t1, -4(s1)\n    %s t0, t0, t1\n    sw t0, -8(s1)\n    addi s1, s1, -4\n", insn);
+/* Note: vpop_two + ALU helper for non-trapping register/immediate ops. */
+static void gen_binop(Gen *g, uint8_t op, const char *insn, const char *imm_insn) {
+    VSlot *vb = &g->vstack[g->depth - 1];
+    VSlot *va = &g->vstack[g->depth - 2];
+
+    /* 1. Compile-time constant folding when both operands are known immediates. */
+    if (va->loc == V_IMM && vb->loc == V_IMM) {
+        uint32_t a = (uint32_t)va->imm, b = (uint32_t)vb->imm, r = 0;
+        switch (op) {
+        case OP_ADD: case OP_ADD_TEMP: r = a + b; break;
+        case OP_SUB: r = a - b; break;
+        case OP_MUL: r = a * b; break;
+        case OP_BAND: r = a & b; break;
+        case OP_BOR: r = a | b; break;
+        case OP_BXOR: r = a ^ b; break;
+        default: break;
+        }
+        pop_kinds(g, 2);
+        vpush_imm(g, (int32_t)r, certain_int());
+        return;
+    }
+
+    /* 2. Immediate folding on RHS (or commutative LHS for ADD/BAND/BOR/BXOR/MUL). */
+    bool comm = (op == OP_ADD || op == OP_ADD_TEMP || op == OP_BAND || op == OP_BOR || op == OP_BXOR || op == OP_MUL);
+    if (comm && va->loc == V_IMM && vb->loc != V_IMM) {
+        VSlot tmp = *va;
+        *va = *vb;
+        *vb = tmp;
+    }
+    if (vb->loc == V_IMM) {
+        int32_t imm = vb->imm;
+        if (op == OP_MUL) {
+            if (imm == 0) {
+                pop_kinds(g, 1);
+                int fa;
+                (void)vpop_reg(g, "t0", &fa);
+                free_reg(g, fa);
+                vpush_imm(g, 0, certain_int());
+                return;
+            }
+            if (imm == 1) {
+                pop_kinds(g, 1);
+                g->kinds[g->depth - 1] = certain_int();
+                return;
+            }
+            int sh = pow2_shift(imm);
+            if (sh > 0) {
+                pop_kinds(g, 1);
+                int fa;
+                const char *ra = vpop_reg(g, "t0", &fa);
+                int dst = reuse_or_alloc(g, fa, -1);
+                out(g, "    slli %s, %s, %d\n", CACHE_REGS[dst], ra, sh);
+                vpush_reg(g, dst, certain_int());
+                return;
+            }
+        } else if (imm_insn != NULL) {
+            int32_t eff = (op == OP_SUB) ? (int32_t)(0u - (uint32_t)imm) : imm;
+            if ((op != OP_SUB || imm != INT32_MIN) && fits_imm12(eff)) {
+                if ((op == OP_ADD || op == OP_ADD_TEMP || op == OP_SUB || op == OP_BOR || op == OP_BXOR) && eff == 0) {
+                    pop_kinds(g, 1);
+                    g->kinds[g->depth - 1] = certain_int();
+                    return;
+                }
+                pop_kinds(g, 1);
+                int fa;
+                const char *ra = vpop_reg(g, "t0", &fa);
+                int dst = reuse_or_alloc(g, fa, -1);
+                out(g, "    %s %s, %s, %d\n", imm_insn, CACHE_REGS[dst], ra, (int)eff);
+                vpush_reg(g, dst, certain_int());
+                return;
+            }
+        }
+    }
+
+    /* 3. General register-register op. */
+    const char *ra, *rb;
+    int fa, fb;
+    vpop_two(g, &ra, &rb, &fa, &fb);
+    int dst = reuse_or_alloc(g, fa, fb);
+    out(g, "    %s %s, %s, %s\n", insn, CACHE_REGS[dst], ra, rb);
+    vpush_reg(g, dst, certain_int());
+}
+
+static void record_target(Gen *g, int *tdepth, Kind *tkind, int off, int t) {
+    if (tdepth[t] < 0) {
+        tdepth[t] = g->depth;
+        if (g->depth > 0) tkind[t] = g->kinds[g->depth - 1];
+    } else if (t > off && g->depth > 0) {
+        tkind[t] = merge(tkind[t], g->kinds[g->depth - 1]);
+    }
 }
 
 static void gen_function(Gen *g, int fi) {
@@ -579,8 +895,10 @@ static void gen_function(Gen *g, int fi) {
     Chunk *ch = &fn->chunk;
     g->fn = fi;
     g->depth = 0;
-    push_kind(g, fi == g->first_fn ? kind_of(K_INT) : (Kind){K_FN, (uint16_t)fi}); /* slot 0 */
-    for (int i = 0; i < fn->arity; i++) push_kind(g, kind_of(K_INT));
+    g->mem_depth = 0;
+    g->reg_used = 0;
+    vpush_mem(g, fi == g->first_fn ? kind_of(K_INT) : (Kind){K_FN, (uint16_t)fi}); /* slot 0 */
+    for (int i = 0; i < fn->arity; i++) vpush_mem(g, kind_of(K_INT));
     g->line = ch->count > 0 ? ch->lines[0] : 0;
 
     memset(g->local_set, 0, sizeof g->local_set);
@@ -613,8 +931,12 @@ static void gen_function(Gen *g, int fi) {
     bool reachable = true;
     for (int off = 0; off < ch->count && !g->failed;) {
         if (target[off]) {
+            if (reachable) spill_all(g);
             if (!reachable && tdepth[off] >= 0) {
                 g->depth = tdepth[off];
+                g->mem_depth = g->depth;
+                g->reg_used = 0;
+                for (int i = 0; i < g->depth; i++) g->vstack[i].loc = V_MEM;
                 if (g->depth > 0) g->kinds[g->depth - 1] = tkind[off];
             } else if (tdepth[off] >= 0 && g->depth > 0) {
                 g->kinds[g->depth - 1] = merge(g->kinds[g->depth - 1], tkind[off]);
@@ -636,50 +958,65 @@ static void gen_function(Gen *g, int fi) {
         case OP_CONST: {
             Value v = ch->consts[u16_at(ch->code, off + 1)];
             if (v.type == VAL_INT) {
-                out(g, "    li t0, %d\n", (int)v.as.i);
-                push_reg(g, "t0");
-                push_kind(g, certain_int());
+                vpush_imm(g, v.as.i, certain_int());
             } else if (v.type == VAL_STR) {
                 g->str_used[v.as.index] = true;
-                out(g, "    la t0, jl_str_%d\n", v.as.index);
-                push_reg(g, "t0");
-                push_kind(g, (Kind){K_STR, v.as.index});
+                int r = alloc_reg(g);
+                out(g, "    la %s, jl_str_%d\n", CACHE_REGS[r], v.as.index);
+                vpush_reg(g, r, (Kind){K_STR, v.as.index});
             } else if (v.type == VAL_FN) {
-                out(g, "    la t0, jl_fn_%d\n", v.as.index);
-                push_reg(g, "t0");
-                push_kind(g, (Kind){K_FN, v.as.index});
+                int r = alloc_reg(g);
+                out(g, "    la %s, jl_fn_%d\n", CACHE_REGS[r], v.as.index);
+                vpush_reg(g, r, (Kind){K_FN, v.as.index});
             } else {
                 error(g, "this constant isn't supported in native code");
             }
             break;
         }
         case OP_NIL:
-            push_reg(g, "zero");
-            push_kind(g, kind_of(K_NIL));
+            vpush_imm(g, 0, kind_of(K_NIL));
             break;
         case OP_FALSE:
-            push_reg(g, "zero");
-            push_kind(g, kind_of(K_BOOL));
+            vpush_imm(g, 0, kind_of(K_BOOL));
             break;
         case OP_TRUE:
-            out(g, "    li t0, 1\n");
-            push_reg(g, "t0");
-            push_kind(g, kind_of(K_BOOL));
+            vpush_imm(g, 1, kind_of(K_BOOL));
             break;
         case OP_POP:
-            out(g, "    addi s1, s1, -4\n");
-            pop_kinds(g, 1);
+            if (g->depth > 0) {
+                if (g->vstack[g->depth - 1].loc == V_MEM) {
+                    out(g, "    addi s1, s1, -4\n");
+                }
+                pop_kinds(g, 1);
+            }
             break;
         case OP_DUP2:
+            spill_all(g);
             out(g, "    lw t0, -8(s1)\n    lw t1, -4(s1)\n    sw t0, 0(s1)\n    sw t1, 4(s1)\n    addi s1, s1, 8\n");
-            push_kind(g, top(g, 1));
-            push_kind(g, top(g, 1));
+            vpush_mem(g, top(g, 1));
+            vpush_mem(g, top(g, 1));
             break;
         case OP_GET_LOCAL: {
             int slot = ch->code[off + 1];
-            out(g, "    lw t0, %d(s0)\n", 4 * slot);
-            push_reg(g, "t0");
-            push_kind(g, slot < g->depth ? read_kind(g->kinds[slot], g->local_set[slot]) : kind_of(K_INT));
+            Kind k = slot < g->depth ? read_kind(g->kinds[slot], g->local_set[slot]) : kind_of(K_INT);
+            if (slot < g->mem_depth) {
+                int r = alloc_reg(g);
+                out(g, "    lw %s, %d(s0)\n", CACHE_REGS[r], 4 * slot);
+                vpush_reg(g, r, k);
+            } else if (slot < g->depth && g->vstack[slot].loc == V_IMM) {
+                vpush_imm(g, g->vstack[slot].imm, k);
+            } else if (slot < g->depth && g->vstack[slot].loc == V_REG) {
+                int src = g->vstack[slot].reg;
+                int r = alloc_reg(g);
+                /* alloc_reg may have spilled `slot` to memory; check again. */
+                if (slot < g->mem_depth) out(g, "    lw %s, %d(s0)\n", CACHE_REGS[r], 4 * slot);
+                else out(g, "    mv %s, %s\n", CACHE_REGS[r], CACHE_REGS[src]);
+                vpush_reg(g, r, k);
+            } else {
+                int r = alloc_reg(g);
+                out(g, "    lw %s, %d(s0)\n", CACHE_REGS[r], 4 * slot);
+                vpush_reg(g, r, k);
+            }
             break;
         }
         case OP_SET_LOCAL: {
@@ -692,20 +1029,30 @@ static void gen_function(Gen *g, int fi) {
                 }
                 g->kinds[slot] = merge(g->kinds[slot], top(g, 0));
             }
-            out(g, "    lw t0, -4(s1)\n    sw t0, %d(s0)\n", 4 * slot);
+            if (slot >= g->mem_depth) spill_to(g, slot + 1);
+            bool drop = off + 2 < ch->count && !target[off + 2] && ch->code[off + 2] == OP_POP;
+            if (drop) {
+                int fr;
+                const char *r = vpop_reg(g, "t0", &fr);
+                out(g, "    sw %s, %d(s0)\n", r, 4 * slot);
+                free_reg(g, fr);
+                off += 1; /* consume fused OP_POP */
+            } else {
+                const char *r = vpeek_reg(g, "t0");
+                out(g, "    sw %s, %d(s0)\n", r, 4 * slot);
+            }
             break;
         }
         case OP_GET_GLOBAL: {
             int gi = ch->code[off + 1];
             Global *gl = &g->vm->globals[gi];
             if (gl->value.type == VAL_NATIVE && gl->defined) {
-                push_reg(g, "zero");
-                push_kind(g, (Kind){K_NATIVE, gl->value.as.index});
+                vpush_imm(g, 0, (Kind){K_NATIVE, gl->value.as.index});
             } else {
-                out(g, "    la t0, jl_g_%d\n    lw t0, 0(t0)\n", gi);
-                push_reg(g, "t0");
-                if (g->gbind[gi] >= 0) push_kind(g, (Kind){K_FN, (uint16_t)g->gbind[gi]});
-                else push_kind(g, g->gkind_set[gi] ? read_kind(g->gkind[gi], g->reassigned[gi]) : kind_of(K_INT));
+                int r = alloc_reg(g);
+                out(g, "    la %s, jl_g_%d\n    lw %s, 0(%s)\n", CACHE_REGS[r], gi, CACHE_REGS[r], CACHE_REGS[r]);
+                if (g->gbind[gi] >= 0) vpush_reg(g, r, (Kind){K_FN, (uint16_t)g->gbind[gi]});
+                else vpush_reg(g, r, g->gkind_set[gi] ? read_kind(g->gkind[gi], g->reassigned[gi]) : kind_of(K_INT));
             }
             break;
         }
@@ -725,10 +1072,16 @@ static void gen_function(Gen *g, int fi) {
             g->gkind[gi] = g->gkind_set[gi] ? merge(g->gkind[gi], k) : k;
             g->gkind_set[gi] = true;
             if (op == OP_DEF_GLOBAL && k.kind == K_FN && !g->reassigned[gi]) g->gbind[gi] = k.index;
-            out(g, "    lw t0, -4(s1)\n    la t1, jl_g_%d\n    sw t0, 0(t1)\n", gi);
-            if (op == OP_DEF_GLOBAL) {
-                out(g, "    addi s1, s1, -4\n");
-                pop_kinds(g, 1);
+            bool drop = (op == OP_DEF_GLOBAL) || (off + 2 < ch->count && !target[off + 2] && ch->code[off + 2] == OP_POP);
+            if (drop) {
+                int fr;
+                const char *r = vpop_reg(g, "t0", &fr);
+                out(g, "    la t1, jl_g_%d\n    sw %s, 0(t1)\n", gi, r);
+                free_reg(g, fr);
+                if (op == OP_SET_GLOBAL) off += 1; /* consume fused OP_POP */
+            } else {
+                const char *r = vpeek_reg(g, "t0");
+                out(g, "    la t1, jl_g_%d\n    sw %s, 0(t1)\n", gi, r);
             }
             break;
         }
@@ -740,127 +1093,281 @@ static void gen_function(Gen *g, int fi) {
                 break;
             }
             if (!numbers_only(g, "+", 2)) break;
-            binary(g, "add");
-            pop_kinds(g, 2);
-            push_kind(g, certain_int());
+            gen_binop(g, op, "add", "addi");
             break;
         case OP_SUB:
+            if (!numbers_only(g, "-", 2)) break;
+            gen_binop(g, op, "sub", "addi");
+            break;
         case OP_MUL:
-            if (!numbers_only(g, op == OP_SUB ? "-" : "*", 2)) break;
-            binary(g, op == OP_SUB ? "sub" : "mul");
-            pop_kinds(g, 2);
-            push_kind(g, certain_int());
+            if (!numbers_only(g, "*", 2)) break;
+            gen_binop(g, op, "mul", NULL);
             break;
         case OP_DIV:
-        case OP_MOD:
+        case OP_MOD: {
             if (!numbers_only(g, op == OP_DIV ? "/" : "%", 2)) break;
-            out(g, "    lw t1, -4(s1)\n");
-            trap_unless(g, "bnez t1", op == OP_DIV ? "division by zero" : "modulo by zero");
-            binary(g, op == OP_DIV ? "div" : "rem");
-            pop_kinds(g, 2);
-            push_kind(g, kind_of(K_INT));
+            VSlot *va = &g->vstack[g->depth - 2];
+            VSlot *vb = &g->vstack[g->depth - 1];
+            if (va->loc == V_IMM && vb->loc == V_IMM && vb->imm != 0) {
+                int32_t res;
+                if (va->imm == INT32_MIN && vb->imm == -1) res = op == OP_DIV ? INT32_MIN : 0;
+                else res = op == OP_DIV ? va->imm / vb->imm : va->imm % vb->imm;
+                pop_kinds(g, 2);
+                vpush_imm(g, res, kind_of(K_INT));
+                break;
+            }
+            bool known_nz = vb->loc == V_IMM && vb->imm != 0;
+            const char *ra, *rb;
+            int fa, fb;
+            vpop_two(g, &ra, &rb, &fa, &fb);
+            if (!known_nz) {
+                char cond[32];
+                snprintf(cond, sizeof cond, "bnez %s", rb);
+                trap_unless(g, cond, op == OP_DIV ? "division by zero" : "modulo by zero");
+            }
+            int dst = reuse_or_alloc(g, fa, fb);
+            out(g, "    %s %s, %s, %s\n", op == OP_DIV ? "div" : "rem", CACHE_REGS[dst], ra, rb);
+            vpush_reg(g, dst, kind_of(K_INT));
             break;
+        }
         case OP_BAND:
+            if (!numbers_only(g, "&", 2)) break;
+            gen_binop(g, op, "and", "andi");
+            break;
         case OP_BOR:
+            if (!numbers_only(g, "|", 2)) break;
+            gen_binop(g, op, "or", "ori");
+            break;
         case OP_BXOR:
-            if (!numbers_only(g, op == OP_BAND ? "&" : op == OP_BOR ? "|" : "^", 2)) break;
-            binary(g, op == OP_BAND ? "and" : op == OP_BOR ? "or" : "xor");
-            pop_kinds(g, 2);
-            push_kind(g, certain_int());
+            if (!numbers_only(g, "^", 2)) break;
+            gen_binop(g, op, "xor", "xori");
             break;
         case OP_SHL:
-        case OP_SHR:
+        case OP_SHR: {
             if (!numbers_only(g, op == OP_SHL ? "<<" : ">>", 2)) break;
-            out(g, "    lw t1, -4(s1)\n");
-            trap_num_unless(g, "sltiu t2, t1, 32\n    bnez t2", "shift amount ", "t1", " is out of range (it must be 0..31)");
-            binary(g, op == OP_SHL ? "sll" : "sra");
-            pop_kinds(g, 2);
-            push_kind(g, kind_of(K_INT));
+            VSlot *va = &g->vstack[g->depth - 2];
+            VSlot *vb = &g->vstack[g->depth - 1];
+            if (vb->loc == V_IMM && vb->imm >= 0 && vb->imm < 32) {
+                int32_t sh = vb->imm;
+                if (va->loc == V_IMM) {
+                    int32_t res = op == OP_SHL ? (int32_t)((uint32_t)va->imm << sh)
+                                               : (sh == 0 ? va->imm : (va->imm >= 0 ? (int32_t)((uint32_t)va->imm >> sh)
+                                                                                    : (int32_t)(((uint32_t)va->imm >> sh) | (~0u << (32 - sh)))));
+                    pop_kinds(g, 2);
+                    vpush_imm(g, res, kind_of(K_INT));
+                    break;
+                }
+                pop_kinds(g, 1);
+                int fa;
+                const char *ra = vpop_reg(g, "t0", &fa);
+                int dst = reuse_or_alloc(g, fa, -1);
+                if (sh == 0) {
+                    if (strcmp(CACHE_REGS[dst], ra) != 0) out(g, "    mv %s, %s\n", CACHE_REGS[dst], ra);
+                } else {
+                    out(g, "    %s %s, %s, %d\n", op == OP_SHL ? "slli" : "srai", CACHE_REGS[dst], ra, (int)sh);
+                }
+                vpush_reg(g, dst, kind_of(K_INT));
+                break;
+            }
+            const char *ra, *rb;
+            int fa, fb;
+            vpop_two(g, &ra, &rb, &fa, &fb);
+            char cond[48];
+            snprintf(cond, sizeof cond, "sltiu t2, %s, 32\n    bnez t2", rb);
+            trap_num_unless(g, cond, "shift amount ", rb, " is out of range (it must be 0..31)");
+            int dst = reuse_or_alloc(g, fa, fb);
+            out(g, "    %s %s, %s, %s\n", op == OP_SHL ? "sll" : "sra", CACHE_REGS[dst], ra, rb);
+            vpush_reg(g, dst, kind_of(K_INT));
             break;
+        }
         case OP_NEG:
             if (!numbers_only(g, "-", 1)) break;
-            out(g, "    lw t0, -4(s1)\n    neg t0, t0\n    sw t0, -4(s1)\n");
-            pop_kinds(g, 1);
-            push_kind(g, kind_of(K_INT));
+            if (g->vstack[g->depth - 1].loc == V_IMM) {
+                g->vstack[g->depth - 1].imm = (int32_t)(0u - (uint32_t)g->vstack[g->depth - 1].imm);
+                g->kinds[g->depth - 1] = kind_of(K_INT);
+                break;
+            }
+            {
+                int fa;
+                const char *ra = vpop_reg(g, "t0", &fa);
+                int dst = reuse_or_alloc(g, fa, -1);
+                out(g, "    neg %s, %s\n", CACHE_REGS[dst], ra);
+                vpush_reg(g, dst, kind_of(K_INT));
+            }
             break;
         case OP_BNOT:
             if (!numbers_only(g, "~", 1)) break;
-            out(g, "    lw t0, -4(s1)\n    not t0, t0\n    sw t0, -4(s1)\n");
-            pop_kinds(g, 1);
-            push_kind(g, kind_of(K_INT));
+            if (g->vstack[g->depth - 1].loc == V_IMM) {
+                g->vstack[g->depth - 1].imm = ~g->vstack[g->depth - 1].imm;
+                g->kinds[g->depth - 1] = kind_of(K_INT);
+                break;
+            }
+            {
+                int fa;
+                const char *ra = vpop_reg(g, "t0", &fa);
+                int dst = reuse_or_alloc(g, fa, -1);
+                out(g, "    not %s, %s\n", CACHE_REGS[dst], ra);
+                vpush_reg(g, dst, kind_of(K_INT));
+            }
             break;
         case OP_NOT:
         case OP_BOOL:
-            out(g, "    lw t0, -4(s1)\n    %s t0, t0\n    sw t0, -4(s1)\n", op == OP_NOT ? "seqz" : "snez");
-            pop_kinds(g, 1);
-            push_kind(g, kind_of(K_BOOL));
-            break;
-        case OP_EQ:
-        case OP_NE: {
-            Kind ka = top(g, 1), kb = top(g, 0);
-            bool known_a = not_a_number(ka) || (ka.kind == K_INT && ka.index == CERTAIN);
-            bool known_b = not_a_number(kb) || (kb.kind == K_INT && kb.index == CERTAIN);
-            if (known_a && known_b && ka.kind != kb.kind) {
-                /* values of different types are never equal */
-                out(g, "    li t0, %d\n    sw t0, -8(s1)\n    addi s1, s1, -4\n", op == OP_NE);
-                pop_kinds(g, 2);
-                push_kind(g, kind_of(K_BOOL));
+            if (g->vstack[g->depth - 1].loc == V_IMM) {
+                int32_t v = g->vstack[g->depth - 1].imm;
+                g->vstack[g->depth - 1].imm = op == OP_NOT ? (v == 0) : (v != 0);
+                g->kinds[g->depth - 1] = kind_of(K_BOOL);
                 break;
             }
-            out(g, "    lw t0, -8(s1)\n    lw t1, -4(s1)\n    xor t0, t0, t1\n    %s t0, t0\n    sw t0, -8(s1)\n    addi s1, s1, -4\n",
-                op == OP_EQ ? "seqz" : "snez");
-            pop_kinds(g, 2);
-            push_kind(g, kind_of(K_BOOL));
+            {
+                int fa;
+                const char *ra = vpop_reg(g, "t0", &fa);
+                int dst = reuse_or_alloc(g, fa, -1);
+                out(g, "    %s %s, %s\n", op == OP_NOT ? "seqz" : "snez", CACHE_REGS[dst], ra);
+                vpush_reg(g, dst, kind_of(K_BOOL));
+            }
+            break;
+        case OP_EQ:
+        case OP_NE:
+        case OP_LT:
+        case OP_GT:
+        case OP_LE:
+        case OP_GE: {
+            bool is_eq = (op == OP_EQ || op == OP_NE);
+            if (!is_eq) {
+                const char *sym = op == OP_LT ? "<" : op == OP_GT ? ">" : op == OP_LE ? "<=" : ">=";
+                if (!numbers_only(g, sym, 2)) break;
+            }
+            bool fused = off + 1 < ch->count && !target[off + 1] && ch->code[off + 1] == OP_JUMP_IF_FALSE;
+            int jt = fused ? jump_target(ch, off + 1) : 0;
+
+            /* Different known types are never equal. */
+            if (is_eq) {
+                Kind ka = top(g, 1), kb = top(g, 0);
+                bool known_a = not_a_number(ka) || (ka.kind == K_INT && ka.index == CERTAIN);
+                bool known_b = not_a_number(kb) || (kb.kind == K_INT && kb.index == CERTAIN);
+                if (known_a && known_b && ka.kind != kb.kind) {
+                    int val = (op == OP_NE);
+                    if (fused) {
+                        spill_to(g, g->depth - 2);
+                        const char *ra, *rb;
+                        int fa, fb;
+                        vpop_two(g, &ra, &rb, &fa, &fb);
+                        free_reg(g, fa);
+                        free_reg(g, fb);
+                        if (!val) {
+                            out(g, "    j .L%d_%d\n", fi, jt);
+                            reachable = false;
+                        }
+                        record_target(g, tdepth, tkind, off + 1, jt);
+                        off += 3;
+                    } else {
+                        const char *ra, *rb;
+                        int fa, fb;
+                        vpop_two(g, &ra, &rb, &fa, &fb);
+                        free_reg(g, fa);
+                        free_reg(g, fb);
+                        vpush_imm(g, val, kind_of(K_BOOL));
+                    }
+                    break;
+                }
+            }
+
+            /* Both immediate constants: fold at compile time! */
+            if (g->vstack[g->depth - 2].loc == V_IMM && g->vstack[g->depth - 1].loc == V_IMM) {
+                int32_t a = g->vstack[g->depth - 2].imm, b = g->vstack[g->depth - 1].imm;
+                int val = op == OP_EQ ? (a == b) : op == OP_NE ? (a != b)
+                        : op == OP_LT ? (a < b)  : op == OP_GT ? (a > b)
+                        : op == OP_LE ? (a <= b) : (a >= b);
+                pop_kinds(g, 2);
+                if (fused) {
+                    spill_all(g);
+                    if (!val) {
+                        out(g, "    j .L%d_%d\n", fi, jt);
+                        reachable = false;
+                    }
+                    record_target(g, tdepth, tkind, off + 1, jt);
+                    off += 3;
+                } else {
+                    vpush_imm(g, val, kind_of(K_BOOL));
+                }
+                break;
+            }
+
+            if (fused) {
+                /* Spill slots below the two operands first so s1 is clean at branch target. */
+                spill_to(g, g->depth - 2);
+                const char *ra, *rb;
+                int fa, fb;
+                vpop_two(g, &ra, &rb, &fa, &fb);
+                /* Branch to jt when comparison is FALSE. */
+                if (op == OP_EQ) emit_cond_branch(g, "bne", "beq", ra, rb, fi, jt, off);
+                else if (op == OP_NE) emit_cond_branch(g, "beq", "bne", ra, rb, fi, jt, off);
+                else if (op == OP_LT) emit_cond_branch(g, "bge", "blt", ra, rb, fi, jt, off);
+                else if (op == OP_GT) emit_cond_branch(g, "bge", "blt", rb, ra, fi, jt, off);
+                else if (op == OP_LE) emit_cond_branch(g, "blt", "bge", rb, ra, fi, jt, off);
+                else emit_cond_branch(g, "blt", "bge", ra, rb, fi, jt, off);
+                free_reg(g, fa);
+                free_reg(g, fb);
+                record_target(g, tdepth, tkind, off + 1, jt);
+                off += 3;
+                break;
+            }
+
+            const char *ra, *rb;
+            int fa, fb;
+            vpop_two(g, &ra, &rb, &fa, &fb);
+            int dst = reuse_or_alloc(g, fa, fb);
+            const char *rd = CACHE_REGS[dst];
+            if (op == OP_EQ || op == OP_NE) {
+                out(g, "    xor %s, %s, %s\n    %s %s, %s\n", rd, ra, rb, op == OP_EQ ? "seqz" : "snez", rd, rd);
+            } else if (op == OP_LT) {
+                out(g, "    slt %s, %s, %s\n", rd, ra, rb);
+            } else if (op == OP_GT) {
+                out(g, "    slt %s, %s, %s\n", rd, rb, ra);
+            } else if (op == OP_LE) {
+                out(g, "    slt %s, %s, %s\n    xori %s, %s, 1\n", rd, rb, ra, rd, rd);
+            } else {
+                out(g, "    slt %s, %s, %s\n    xori %s, %s, 1\n", rd, ra, rb, rd, rd);
+            }
+            vpush_reg(g, dst, kind_of(K_BOOL));
             break;
         }
-        case OP_LT:
-            if (!numbers_only(g, "<", 2)) break;
-            binary(g, "slt");
-            pop_kinds(g, 2);
-            push_kind(g, kind_of(K_BOOL));
-            break;
-        case OP_GT:
-            if (!numbers_only(g, ">", 2)) break;
-            out(g, "    lw t0, -8(s1)\n    lw t1, -4(s1)\n    slt t0, t1, t0\n    sw t0, -8(s1)\n    addi s1, s1, -4\n");
-            pop_kinds(g, 2);
-            push_kind(g, kind_of(K_BOOL));
-            break;
-        case OP_LE:
-        case OP_GE:
-            if (!numbers_only(g, op == OP_LE ? "<=" : ">=", 2)) break;
-            out(g, "    lw t0, -8(s1)\n    lw t1, -4(s1)\n    slt t0, %s\n    xori t0, t0, 1\n    sw t0, -8(s1)\n    addi s1, s1, -4\n",
-                op == OP_LE ? "t1, t0" : "t0, t1");
-            pop_kinds(g, 2);
-            push_kind(g, kind_of(K_BOOL));
-            break;
         case OP_JUMP:
         case OP_LOOP:
         case OP_JUMP_IF_FALSE: {
             int t = jump_target(ch, off);
             if (op == OP_JUMP_IF_FALSE) {
-                int skip = new_label(g);
-                out(g, "    addi s1, s1, -4\n    lw t0, 0(s1)\n    bnez t0, .Lok%d\n    j .L%d_%d\n.Lok%d:\n", skip, fi, t, skip);
-                pop_kinds(g, 1);
+                if (g->vstack[g->depth - 1].loc == V_IMM) {
+                    int32_t cond = g->vstack[g->depth - 1].imm;
+                    pop_kinds(g, 1);
+                    if (!cond) {
+                        spill_all(g);
+                        out(g, "    j .L%d_%d\n", fi, t);
+                        reachable = false;
+                    }
+                    record_target(g, tdepth, tkind, off, t);
+                    break;
+                }
+                spill_to(g, g->depth - 1);
+                int fr;
+                const char *r = vpop_reg(g, "t0", &fr);
+                emit_cond_branch(g, "beq", "bne", r, "zero", fi, t, off);
+                free_reg(g, fr);
             } else {
+                spill_all(g);
                 for (int b = 0; b < ch->bound_count; b++)
                     if (ch->bounds[b].off == off) out(g, "    # @bound %d\n", ch->bounds[b].count);
                 out(g, "    j .L%d_%d\n", fi, t);
                 reachable = false;
             }
-            if (tdepth[t] < 0) {
-                tdepth[t] = g->depth;
-                if (g->depth > 0) tkind[t] = g->kinds[g->depth - 1];
-            } else if (t > off && g->depth > 0) {
-                tkind[t] = merge(tkind[t], g->kinds[g->depth - 1]);
-            }
+            record_target(g, tdepth, tkind, off, t);
             break;
         }
         case OP_CALL: {
+            spill_all(g);
             int argc = ch->code[off + 1];
             Kind callee = top(g, argc);
             if (callee.kind != K_NATIVE) {
-                /* Parameters are untyped words in native code, so only values
-                   that are the same whatever their type can be passed. */
                 bool ok = true;
                 for (int a = 0; a < argc && ok; a++) {
                     Kind k = top(g, argc - 1 - a);
@@ -883,22 +1390,21 @@ static void gen_function(Gen *g, int fi) {
                 }
                 out(g, "    call jl_fn_%d\n", callee.index);
                 pop_kinds(g, argc + 1);
-                push_kind(g, kind_of(g->returns_nil[callee.index] ? K_NIL : g->returns_bool[callee.index] ? K_BOOL : K_INT));
+                vpush_mem(g, kind_of(g->returns_nil[callee.index] ? K_NIL : g->returns_bool[callee.index] ? K_BOOL : K_INT));
             } else if (callee.kind == K_STR || callee.kind == K_BOOL || callee.kind == K_NIL) {
                 error(g, "this value can't be called (only functions can be called)");
             } else {
-                /* a function stored in a variable: check it at run time */
                 out(g, "    lw t2, %d(s1)\n", -4 * (argc + 1));
                 trap_unless(g, "bnez t2", "can't call this value (only functions can be called)");
                 out(g, "    lw t3, -4(t2)\n    li t4, %d\n", argc);
                 trap_unless(g, "beq t3, t4", "wrong number of arguments for this function");
                 out(g, "    jalr ra, 0(t2)\n");
                 pop_kinds(g, argc + 1);
-                push_kind(g, kind_of(K_INT));
+                vpush_mem(g, kind_of(K_INT));
             }
             break;
         }
-        case OP_RETURN:
+        case OP_RETURN: {
             if (fi != g->first_fn && !g->returns_nil[fi] &&
                 (top(g, 0).kind == K_STR || (top(g, 0).kind == K_BOOL && !g->returns_bool[fi]))) {
                 error(g, "in native code, functions can only return numbers, but this returns a %s "
@@ -906,51 +1412,79 @@ static void gen_function(Gen *g, int fi) {
                       kind_name(top(g, 0)));
                 break;
             }
-            out(g, "    lw t0, -4(s1)\n    sw t0, 0(s0)\n    addi s1, s0, 4\n");
+            int fr;
+            const char *r = vpop_reg(g, "t0", &fr);
+            out(g, "    sw %s, 0(s0)\n    addi s1, s0, 4\n", r);
+            free_reg(g, fr);
             out(g, "    la t1, jl_depth\n    lw t2, 0(t1)\n    addi t2, t2, -1\n    sw t2, 0(t1)\n");
             out(g, "    lw ra, 12(sp)\n    lw s0, 8(sp)\n    addi sp, sp, 16\n    ret\n");
+            g->depth = 0;
+            g->mem_depth = 0;
+            g->reg_used = 0;
             reachable = false;
             break;
+        }
         case OP_INDEX_GET:
             if (top(g, 1).kind == K_STR) {
                 error(g, "indexing strings isn't available in native code yet");
                 break;
             }
-            out(g, "    lw t0, -8(s1)\n    lw t1, -4(s1)\n");
-            trap_num_unless(g, "sltiu t2, t1, 32\n    bnez t2", "bit ", "t1", " doesn't exist: an int has bits 0..31");
-            out(g, "    srl t0, t0, t1\n    andi t0, t0, 1\n    sw t0, -8(s1)\n    addi s1, s1, -4\n");
-            pop_kinds(g, 2);
-            push_kind(g, kind_of(K_INT));
+            if (g->vstack[g->depth - 1].loc == V_IMM && g->vstack[g->depth - 1].imm >= 0 && g->vstack[g->depth - 1].imm < 32) {
+                int32_t bit = g->vstack[g->depth - 1].imm;
+                pop_kinds(g, 1);
+                int fa;
+                const char *ra = vpop_reg(g, "t0", &fa);
+                int dst = reuse_or_alloc(g, fa, -1);
+                if (bit == 0) out(g, "    andi %s, %s, 1\n", CACHE_REGS[dst], ra);
+                else out(g, "    srli %s, %s, %d\n    andi %s, %s, 1\n", CACHE_REGS[dst], ra, (int)bit, CACHE_REGS[dst], CACHE_REGS[dst]);
+                vpush_reg(g, dst, kind_of(K_INT));
+                break;
+            }
+            {
+                const char *ra, *rb;
+                int fa, fb;
+                vpop_two(g, &ra, &rb, &fa, &fb);
+                char cond[48];
+                snprintf(cond, sizeof cond, "sltiu t2, %s, 32\n    bnez t2", rb);
+                trap_num_unless(g, cond, "bit ", rb, " doesn't exist: an int has bits 0..31");
+                int dst = reuse_or_alloc(g, fa, fb);
+                out(g, "    srl %s, %s, %s\n    andi %s, %s, 1\n", CACHE_REGS[dst], ra, rb, CACHE_REGS[dst], CACHE_REGS[dst]);
+                vpush_reg(g, dst, kind_of(K_INT));
+            }
             break;
         case OP_INDEX_UPDATE:
             if (top(g, 2).kind == K_STR) {
                 error(g, "strings are read-only");
                 break;
             }
+            spill_all(g);
             out(g, "    lw t0, -12(s1)\n    lw t1, -8(s1)\n    lw t3, -4(s1)\n");
             trap_num_unless(g, "sltiu t2, t1, 32\n    bnez t2", "bit ", "t1", " doesn't exist: an int has bits 0..31");
             trap_unless(g, "sltiu t2, t3, 2\n    bnez t2", "a bit can only be set to 0 or 1");
             out(g, "    li t4, 1\n    sll t4, t4, t1\n    not t4, t4\n    and t0, t0, t4\n    sll t3, t3, t1\n    or t0, t0, t3\n");
             out(g, "    sw t0, -12(s1)\n    addi s1, s1, -8\n");
             pop_kinds(g, 3);
-            push_kind(g, kind_of(K_INT));
+            vpush_mem(g, kind_of(K_INT));
             break;
         case OP_INDEX_SET:
             error(g, "can't change a bit of a temporary value; store it in a variable first");
             break;
         case OP_SLICE_GET:
+            spill_all(g);
             out(g, "    lw a0, -12(s1)\n    lw a1, -8(s1)\n    lw a2, -4(s1)\n    li a3, %d\n    call jl_rt_slice_get\n", g->line);
             out(g, "    sw a0, -12(s1)\n    addi s1, s1, -8\n");
             pop_kinds(g, 3);
-            push_kind(g, kind_of(K_INT));
+            vpush_mem(g, kind_of(K_INT));
             break;
         case OP_SLICE_UPDATE:
+            spill_all(g);
             out(g, "    lw a0, -16(s1)\n    lw a1, -12(s1)\n    lw a2, -8(s1)\n    lw a3, -4(s1)\n    li a4, %d\n    call jl_rt_slice_set\n", g->line);
             out(g, "    sw a0, -16(s1)\n    addi s1, s1, -12\n");
             pop_kinds(g, 4);
-            push_kind(g, kind_of(K_INT));
+            vpush_mem(g, kind_of(K_INT));
             break;
         case OP_ON:
+            spill_all(g);
             out(g, "    addi s1, s1, -8\n");
             pop_kinds(g, 2);
             break;
@@ -1101,6 +1635,43 @@ static const char *RUNTIME2 =
     "    li a0, 10\n    call jl_hal_putc\n    li a0, 70\n    call jl_hal_halt\n"
     "jl_rt_hang:\n    j jl_rt_hang\n";
 
+static const char *RUNTIME3 =
+    "\n# jl_rt_fix_mul(a0=a, a1=b, a2=frac 0..31) -> a0\n"
+    "jl_rt_fix_mul:\n"
+    "    mul t0, a0, a1\n    mulh t1, a0, a1\n"
+    "    beqz a2, jl_rt_fm_sat\n"
+    "    li t3, 32\n    sub t3, t3, a2\n"
+    "    srl t0, t0, a2\n    sll t2, t1, t3\n    or t0, t0, t2\n    sra t1, t1, a2\n"
+    "jl_rt_fm_sat:\n"
+    "    srai t2, t0, 31\n    beq t1, t2, jl_rt_fm_ok\n"
+    "    li a0, 2147483647\n    bgez t1, jl_rt_fm_ret\n    li a0, -2147483648\n"
+    "jl_rt_fm_ret:\n    ret\n"
+    "jl_rt_fm_ok:\n    mv a0, t0\n    ret\n"
+    "\n# jl_rt_fix_div(a0=a, a1=b!=0, a2=frac 0..31) -> a0\n"
+    "jl_rt_fix_div:\n"
+    "    xor t6, a0, a1\n"
+    "    bgez a0, jl_rt_fd_pa\n    neg a0, a0\n"
+    "jl_rt_fd_pa:\n    bgez a1, jl_rt_fd_pb\n    neg a1, a1\n"
+    "jl_rt_fd_pb:\n    li t1, 0\n    mv t0, a0\n    beqz a2, jl_rt_fd_go\n"
+    "    li t2, 32\n    sub t2, t2, a2\n    srl t1, a0, t2\n    sll t0, a0, a2\n"
+    "jl_rt_fd_go:\n"
+    "    li t2, 0\n    li a5, 0\n    li t3, 0\n    li t4, 0\n    li t5, 64\n"
+    "jl_rt_fd_loop:\n"
+    "    srli a3, t1, 31\n    srli a4, t0, 31\n    slli t1, t1, 1\n    or t1, t1, a4\n    slli t0, t0, 1\n"
+    "    srli a5, t2, 31\n    slli t2, t2, 1\n    or t2, t2, a3\n"
+    "    srli a4, t3, 31\n    slli t4, t4, 1\n    or t4, t4, a4\n    slli t3, t3, 1\n"
+    "    bnez a5, jl_rt_fd_sub\n    bltu t2, a1, jl_rt_fd_next\n"
+    "jl_rt_fd_sub:\n    sub t2, t2, a1\n    ori t3, t3, 1\n"
+    "jl_rt_fd_next:\n    addi t5, t5, -1\n    bnez t5, jl_rt_fd_loop\n"
+    "    bltz t6, jl_rt_fd_neg\n"
+    "    bnez t4, jl_rt_fd_psat\n    li t0, 2147483647\n    bltu t0, t3, jl_rt_fd_psat\n"
+    "    mv a0, t3\n    ret\n"
+    "jl_rt_fd_psat:\n    li a0, 2147483647\n    ret\n"
+    "jl_rt_fd_neg:\n"
+    "    bnez t4, jl_rt_fd_nsat\n    li t0, -2147483648\n    bgeu t3, t0, jl_rt_fd_nsat\n"
+    "    neg a0, t3\n    ret\n"
+    "jl_rt_fd_nsat:\n    li a0, -2147483648\n    ret\n";
+
 static const char *SIM_HAL =
     "\n# ---- HAL for the simulated board (jlang emu) -----------------\n"
     "jl_hal_putc:\n    li t0, 0x10000000\n    sw a0, 0(t0)\n    ret\n"
@@ -1140,6 +1711,7 @@ static void emit_string(Gen *g, const char *label, const char *s, uint32_t n) {
 static void prescan(Gen *g, int first, int last) {
     for (int i = 0; i < JL_GLOBALS_MAX; i++) g->gbind[i] = -1;
     for (int fi = first; fi < last; fi++) {
+        if (g->vm->prog.fns[fi].is_test) continue;
         Chunk *ch = &g->vm->prog.fns[fi].chunk;
         uint8_t prev = 0xFF;
         g->returns_nil[fi] = true;
@@ -1232,9 +1804,12 @@ char *rv_generate(JlVM *vm, const char *source, const RvGenOptions *opt) {
 
     /* the script first, so globals know what they hold before functions use them */
     gen_function(g, first);
-    for (int fi = first + 1; fi < last && !g->failed; fi++) gen_function(g, fi);
+    for (int fi = first + 1; fi < last && !g->failed; fi++) {
+        if (vm->prog.fns[fi].is_test) continue;
+        gen_function(g, fi);
+    }
 
-    out(g, "%s%s", RUNTIME, RUNTIME2);
+    out(g, "%s%s%s", RUNTIME, RUNTIME2, RUNTIME3);
     if (opt->sim) out(g, "%s", SIM_HAL);
 
     out(g, "\n    .section .rodata\n");

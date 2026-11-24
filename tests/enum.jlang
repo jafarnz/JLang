@@ -1,0 +1,38 @@
+// Scoped zero-RAM enums: auto-increment, explicit values, match, const interop.
+const BASE = 100
+
+enum Mode {
+    BUS,
+    STUDY,
+    ASK = 10,
+    QUIET,
+    NEG = -2,
+    AFTER_NEG
+}
+
+enum Reg {
+    CTRL = 0x00,
+    STATUS = 0x04,
+    COPY = Mode.ASK,
+    FROM_CONST = BASE
+}
+
+const DEFAULT_MODE = Mode.STUDY
+
+fn mode_code(m) {
+    match m {
+        Mode.BUS => { return 1 }
+        Mode.STUDY => { return 2 }
+        Mode.ASK => { return 3 }
+        _ => { return 0 }
+    }
+}
+
+print(Mode.BUS, Mode.STUDY, Mode.ASK, Mode.QUIET)
+print(Mode.NEG, Mode.AFTER_NEG)
+print(Reg.CTRL, Reg.STATUS, Reg.COPY, Reg.FROM_CONST, DEFAULT_MODE)
+print(mode_code(Mode.BUS), mode_code(DEFAULT_MODE), mode_code(Mode.ASK), mode_code(99))
+// expect: 0 1 10 11
+// expect: -2 -1
+// expect: 0 4 10 100 1
+// expect: 1 2 3 0

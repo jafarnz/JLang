@@ -1304,6 +1304,24 @@ bool vm_stop_current_timer(JlVM *vm) {
     return true;
 }
 
+void jl_set_file_reader(JlVM *vm, const char *source_path, JlFileReader reader, void *user_data) {
+    vm->source_path = source_path;
+    vm->file_reader = reader;
+    vm->file_reader_ud = user_data;
+}
+
+int jl_test_count(const JlVM *vm) { return vm->prog.test_count; }
+
+const char *jl_test_name(const JlVM *vm, int index) {
+    if (index < 0 || index >= vm->prog.test_count) return NULL;
+    return vm->prog.strs[vm->prog.tests[index].name].chars;
+}
+
+JlResult jl_run_test(JlVM *vm, int index) {
+    if (index < 0 || index >= vm->prog.test_count) return JL_NO_HANDLER;
+    return call_handler(vm, fn_val((uint16_t)vm->prog.tests[index].fn));
+}
+
 JlResult jl_disassemble_or_check(JlVM *vm, const char *source, bool print) {
     int first = vm->prog.fn_count;
     int fi = jl_compile(vm, source);

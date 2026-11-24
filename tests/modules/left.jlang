@@ -1,0 +1,5 @@
+use "common.jlang"
+
+fn add_left(x) {
+    return twice(x) + SCALE
+}

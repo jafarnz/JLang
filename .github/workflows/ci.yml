@@ -47,3 +47,13 @@ jobs:
           cd ${{ matrix.dir }}
           idf.py set-target ${{ matrix.target }}
           idf.py build
+          if [ "${{ matrix.dir }}" = "boards/esp32-vm" ]; then
+            idf.py merge-bin -o "$PWD/jlang-${{ matrix.target }}.bin"
+            ls -lh "$PWD/jlang-${{ matrix.target }}.bin"
+          fi
+      - name: Upload merged VM firmware
+        if: matrix.dir == 'boards/esp32-vm'
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.target }}
+          path: ${{ matrix.dir }}/jlang-${{ matrix.target }}.bin

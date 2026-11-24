@@ -1,0 +1,32 @@
+// args: --voice halal? --answer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+// Push-to-talk (record_start / record_stop) + 320-char answer stored in RAM (no 255-byte kv crash).
+let last = nil
+let ptt = nil
+
+on hold {
+    ptt = capture()
+    record_start()
+}
+
+on release {
+    let v = record_stop()
+    let a = ask(ptt, v, "brief")
+    free(ptt)
+    ptt = nil
+    free(v)
+    if last != nil { free(last) }
+    last = trim(a)
+    free(a)
+    print("len:", len(last))
+}
+
+emit("hold")
+emit("release")
+print("repeat len:", len(last))
+// expect: [sim    150ms] camera: photo #1 captured (22 bytes)
+// expect: [sim    150ms] mic: recording started
+// expect: [sim   1350ms] mic: recording stopped (1200 ms, 10 bytes)
+// expect: [sim   1350ms] AI: sending photo + audio ("halal?") + "brief"
+// expect: [sim   3150ms] AI: answered
+// expect: len: 320
+// expect: repeat len: 320

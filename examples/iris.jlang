@@ -3,66 +3,54 @@
 //
 // On the device, this file lives in internal flash (or on a microSD card).
 // The firmware (C) provides the hardware built-ins: capture(), record(),
-// ask(), speak(), chime(), kv_get(), kv_set() and pins. Everything Iris
-// DOES is decided here, so it can be changed without reflashing.
+// record_start(), record_stop(), ask(), speak(), chime(), kv_get(),
+// kv_set() and pins. Everything Iris DOES is decided here, so it can be
+// changed without reflashing.
 //
 // Test it on a laptop (camera, mic, AI and speaker are simulated):
-//   jlang run examples/iris.jlang --emit bus_button
-//   jlang run examples/iris.jlang --emit bus_hold --voice "Is this halal?" --answer "Yes, certified halal."
-//   jlang run examples/iris.jlang --emit describe_button --emit bus_button --kv mode=study
+//   jlang run examples/iris.jlang --emit action_press
+//   jlang run examples/iris.jlang --emit action_hold --emit action_release --voice "Is this halal?" --answer "Yes, certified halal."
+//   jlang run examples/iris.jlang --emit mode_press --emit action_press --kv mode=study
 
 const STATUS_LED = 43        // D6 on XIAO ESP32-S3 (GPIO 21 is microSD CS)
 let LANG = "en"              // "en", "zh", "ms" or "ta"
 let requests = 0
+let last_answer = nil        // kept in RAM: no 255-byte limit, no flash wear
+let ptt_photo = nil          // held while push-to-talk is active
+let ptt_start = 0
 
 pin_mode(STATUS_LED, "out")
 
 fn remember_and_speak(answer) {
     let clean = trim(answer)
-    kv_set("last", clean)
-    speak(clean, LANG)
-    free(clean)
+    if last_answer != nil {
+        free(last_answer)
+    }
+    last_answer = clean
+    speak(last_answer, LANG)
 }
 
 // Take a photo, ask the AI about it, say the answer, free the memory.
 fn look_and_say(question) {
     pin_write(STATUS_LED, 1)
+    defer pin_write(STATUS_LED, 0)
     chime("working")
     let start = millis()
 
     let photo = capture()
+    defer free(photo)
     let answer = ask(photo, question)
-    free(photo)
+    defer free(answer)
     remember_and_speak(answer)
-    free(answer)
 
-    pin_write(STATUS_LED, 0)
     requests += 1
     printf("request #{} took {} ms\n", requests, millis() - start)
 }
 
-// Point the camera and ask anything out loud using the built-in microphone.
-fn point_and_ask() {
-    pin_write(STATUS_LED, 1)
-    chime("working")
-    let start = millis()
-
-    let photo = capture()
-    let voice = record(3000)
-    let answer = ask(photo, voice, "Answer briefly in one or two clear sentences.")
-    free(photo)
-    free(voice)
-    remember_and_speak(answer)
-    free(answer)
-
-    pin_write(STATUS_LED, 0)
-    requests += 1
-    printf("voice request #{} took {} ms\n", requests, millis() - start)
-}
-
 // Button 1 (short press): primary action for the active mode.
-on bus_button {
+on action_press {
     let mode = kv_get("mode", "assist")
+    defer free(mode)
     match mode {
         "assist" => {
             look_and_say("Read the service number of the bus arriving. Reply only: Bus <number>, or: No bus.")
@@ -80,22 +68,49 @@ on bus_button {
             look_and_say("Describe what is in front of me in one short sentence.")
         }
     }
-    free(mode)
 }
 
-// Button 1 (hold): push-to-talk Point and Ask in any mode.
-on bus_hold {
-    point_and_ask()
+// Button 1 (hold): start push-to-talk Point and Ask in any mode.
+on action_hold {
+    if ptt_photo != nil {
+        free(ptt_photo)
+        ptt_photo = nil
+    }
+    pin_write(STATUS_LED, 1)
+    chime("working")
+    ptt_start = millis()
+    ptt_photo = capture()
+    record_start()
+}
+
+// Button 1 (release): stop recording and ask about the photo + spoken question.
+on action_release {
+    if ptt_photo == nil {
+        return
+    }
+    defer pin_write(STATUS_LED, 0)
+    let photo = ptt_photo
+    ptt_photo = nil
+    defer free(photo)
+    let voice = record_stop()
+    defer free(voice)
+    let answer = ask(photo, voice, "Answer briefly in one or two clear sentences.")
+    defer free(answer)
+    remember_and_speak(answer)
+
+    requests += 1
+    printf("voice request #{} took {} ms\n", requests, millis() - ptt_start)
 }
 
 // Button 2: read text aloud in any mode.
-on read_button {
+on read_press {
     look_and_say("Read the most important text in this photo aloud, briefly.")
 }
 
-// Button 3: cycle between modes and save the choice to flash.
-on describe_button {
+// Button 3: cycle between modes and save only the mode setting to flash.
+on mode_press {
     let mode = kv_get("mode", "assist")
+    defer free(mode)
     let next = "assist"
     match mode {
         "assist" => { next = "translate" }
@@ -103,18 +118,19 @@ on describe_button {
         "study" => { next = "memory" }
         _ => { next = "assist" }
     }
-    free(mode)
     kv_set("mode", next)
     let msg = fmt("Mode: {}", next)
+    defer free(msg)
     speak(msg, LANG)
-    free(msg)
 }
 
-// Button 4 (BOOT): repeat the last spoken answer.
-on repeat_button {
-    let last = kv_get("last", "Nothing to repeat yet.")
-    speak(last, LANG)
-    free(last)
+// Button 4 (BOOT): repeat the last spoken answer from RAM.
+on repeat_press {
+    if last_answer == nil {
+        speak("Nothing to repeat yet.", LANG)
+    } else {
+        speak(last_answer, LANG)
+    }
 }
 
 chime("ready")

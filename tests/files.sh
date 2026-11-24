@@ -47,5 +47,38 @@ for t in "$DIR"/tests/svd/*.svd; do
         echo "FAIL: svd $name: the generated consts don't compile"
     fi
 done
+
+# Multi-file `use` modules: VM + Native RISC-V + diamond include-once
+out="$("$BIN" run "$DIR/tests/modules/main.jlang" 2>&1)"
+if [[ "$out" == "18 9" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: modules run ($out)"; fi
+
+out="$("$BIN" emu "$DIR/tests/modules/main.jlang" 2>&1)"
+if [[ "$out" == "18 9" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: modules emu ($out)"; fi
+
+# Circular `use` detection
+out="$("$BIN" check "$DIR/tests/modules/cycle_a.jlang" 2>&1)"
+rc=$?
+if [[ $rc -eq 65 && "$out" == *"circular 'use'"* ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: modules cycle (rc=$rc: $out)"; fi
+
+# Error in imported file reports imported filename and line
+out="$("$BIN" check "$DIR/tests/modules/bad_main.jlang" 2>&1)"
+rc=$?
+if [[ $rc -eq 65 && "$out" == *"bad_child.jlang, line 3"* && "$out" == *"nope_var"* ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: modules child error (rc=$rc: $out)"; fi
+
+# Built-in `jlang test`: passes isolated tests across multiple files (and skips imported tests)
+out="$("$BIN" test "$DIR/tests/unit_tests.jlang" "$DIR/tests/modules/main.jlang" 2>&1)"
+rc=$?
+if [[ $rc -eq 0 && "$out" == *"4 passed, 0 failed"* ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: jlang test pass (rc=$rc: $out)"; fi
+
+# Built-in `jlang test`: catches both assertion failure and memory leak failure
+out="$("$BIN" test "$DIR/tests/modules/unit_fail.jlang" 2>&1)"
+rc=$?
+if [[ $rc -eq 70 && "$out" == *"PASS passes cleanly"* && "$out" == *"FAIL fails assertion"* && "$out" == *"FAIL fails memory leak"* && "$out" == *"1 passed, 2 failed"* ]]; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1))
+    echo "FAIL: jlang test fail-cases (rc=$rc: $out)"
+fi
+
 echo "files: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

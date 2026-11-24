@@ -1,0 +1,9 @@
+use "left.jlang"
+use "right.jlang"
+
+print(add_left(4), add_right(4))
+
+test "module integration" {
+    assert(add_left(5) == 20)
+    assert(add_right(5) == 11)
+}

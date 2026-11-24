@@ -60,6 +60,9 @@ void program_free(Program *p) {
     }
     free(p->fns);
     free(p->named);
+    free(p->enum_names);
+    free(p->enum_members);
+    free(p->tests);
     for (int i = 0; i < p->str_count; i++) free(p->strs[i].chars);
     free(p->strs);
     memset(p, 0, sizeof *p);

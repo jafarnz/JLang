@@ -31,10 +31,13 @@ enum {
 };
 
 #define MAX_EMITS 64
+#define MAX_FILES 64
 
 typedef struct {
     const char *command;
     const char *file;
+    const char *files[MAX_FILES];
+    int file_count;
     uint32_t heap;
     uint64_t max_cycles;
     bool stats;
@@ -62,6 +65,7 @@ static void usage(FILE *f) {
         "usage:\n"
         "  jlang new <name>              create a starter project in ./<name>\n"
         "  jlang run <file.jlang>        run a script on the simulated board\n"
+        "  jlang test <file.jlang...>    run built-in test \"name\" { ... } blocks with leak checking\n"
         "  jlang check <file.jlang>      check for errors without running\n"
         "  jlang xray <file.jlang>       run, showing every instruction and the stack\n"
         "  jlang dis <file.jlang>        print the compiled bytecode\n"
@@ -75,7 +79,7 @@ static void usage(FILE *f) {
         "                                (--mhz <n> sets the clock, default 160)\n"
         "  jlang version\n"
         "\n"
-        "options for run / xray:\n"
+        "options for run / xray / test:\n"
         "  --emit <event>                after the script, fire an event (repeatable)\n"
         "  --pin <n>=<0|1>               value the simulated pin n reads as input\n"
         "  --analog <n>=<0..4095>        value analog(n) reads (default 2048)\n"
@@ -288,12 +292,20 @@ static bool parse_args(int argc, char **argv, Options *o) {
             return false;
         } else if (o->file == NULL) {
             o->file = a;
+            o->files[o->file_count++] = a;
+        } else if (strcmp(o->command, "test") == 0 && o->file_count < MAX_FILES) {
+            o->files[o->file_count++] = a;
         } else {
             fprintf(stderr, "jlang: unexpected argument '%s'\n", a);
             return false;
         }
     }
     return true;
+}
+
+static char *cli_read_file(void *ud, const char *path) {
+    (void)ud;
+    return read_file(path);
 }
 
 static JlVM *make_vm(const Options *o) {
@@ -306,6 +318,7 @@ static JlVM *make_vm(const Options *o) {
         fprintf(stderr, "jlang: could not create the VM (out of memory?)\n");
         return NULL;
     }
+    if (o->file != NULL) jl_set_file_reader(vm, o->file, cli_read_file, NULL);
     BoardSimOptions board = o->board;
     board.ansi_frames = board.realtime && jl_isatty_stdout();
     board_sim_register(vm, &board);
@@ -591,6 +604,67 @@ static int compile_only(const Options *o, bool disassemble) {
     return r == JL_OK ? 0 : EXIT_COMPILE;
 }
 
+static int test_command(const Options *o) {
+    int passed = 0, failed = 0, compile_errs = 0;
+    for (int f = 0; f < o->file_count; f++) {
+        const char *path = o->files[f];
+        char *src = read_file(path);
+        if (src == NULL) {
+            fprintf(stderr, "jlang: can't read '%s': %s\n", path, strerror(errno));
+            return EXIT_NOFILE;
+        }
+        Options one = *o;
+        one.file = path;
+        JlVM *probe = make_vm(&one);
+        if (probe == NULL) {
+            free(src);
+            return EXIT_RUNTIME;
+        }
+        if (jl_disassemble_or_check(probe, src, false) != JL_OK) {
+            jl_free(probe);
+            free(src);
+            compile_errs++;
+            continue;
+        }
+        int n = jl_test_count(probe);
+        jl_free(probe);
+        if (n == 0) {
+            printf("%s: no test blocks\n", path);
+            free(src);
+            continue;
+        }
+        if (o->file_count > 1) printf("%s:\n", path);
+        for (int i = 0; i < n; i++) {
+            JlVM *vm = make_vm(&one);
+            if (vm == NULL) {
+                free(src);
+                return EXIT_RUNTIME;
+            }
+            JlResult r = jl_run_source(vm, src);
+            const char *tname = jl_test_name(vm, i);
+            if (tname == NULL) tname = "(unnamed)";
+            if (r == JL_OK) r = jl_run_test(vm, i);
+            int leaks = 0;
+            if (r == JL_OK && !o->no_leak_check) leaks = jl_report_leaks(vm);
+            fflush(stdout);
+            fflush(stderr);
+            if (r == JL_OK && leaks == 0) {
+                printf("  PASS %s\n", tname);
+                passed++;
+            } else {
+                printf("  FAIL %s\n", tname);
+                failed++;
+            }
+            jl_free(vm);
+        }
+        free(src);
+    }
+    if (compile_errs > 0) return EXIT_COMPILE;
+    printf("%d passed, %d failed\n", passed, failed);
+    fflush(stdout);
+    return failed == 0 ? 0 : EXIT_RUNTIME;
+}
+
 /* ---- jlang repl ---------------------------------------------------- */
 
 static int brace_balance(const char *s) {
@@ -764,6 +838,7 @@ int main(int argc, char **argv) {
 
     bool known = strcmp(cmd, "run") == 0 || strcmp(cmd, "xray") == 0 ||
                  strcmp(cmd, "check") == 0 || strcmp(cmd, "dis") == 0 ||
+                 strcmp(cmd, "test") == 0 ||
                  strcmp(cmd, "emu") == 0 || strcmp(cmd, "build") == 0 || strcmp(cmd, "asm") == 0 ||
                  strcmp(cmd, "wcet") == 0 || strcmp(cmd, "svd") == 0;
     if (!known) {
@@ -776,6 +851,7 @@ int main(int argc, char **argv) {
         return EXIT_USAGE;
     }
     if (strcmp(cmd, "run") == 0) return run_file(&o, false);
+    if (strcmp(cmd, "test") == 0) return test_command(&o);
     if (strcmp(cmd, "emu") == 0) return native(&o, true);
     if (strcmp(cmd, "svd") == 0) return svd_command(&o);
     if (strcmp(cmd, "wcet") == 0) {

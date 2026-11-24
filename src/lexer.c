@@ -7,14 +7,19 @@ void lexer_init(Lexer *lx, const char *src) {
     lx->start = src;
     lx->cur = src;
     lx->line_start = src;
+    lx->limit = NULL;
     lx->line = 1;
 }
 
-static bool at_end(const Lexer *lx) { return *lx->cur == '\0'; }
+static bool at_end(const Lexer *lx) {
+    return *lx->cur == '\0' || (lx->limit != NULL && lx->cur >= lx->limit);
+}
 static char advance(Lexer *lx) { return *lx->cur++; }
-static char peek(const Lexer *lx) { return *lx->cur; }
+static char peek(const Lexer *lx) { return at_end(lx) ? '\0' : *lx->cur; }
 static char peek_next(const Lexer *lx) {
-    return at_end(lx) ? '\0' : lx->cur[1];
+    if (at_end(lx)) return '\0';
+    if (lx->limit != NULL && lx->cur + 1 >= lx->limit) return '\0';
+    return lx->cur[1];
 }
 
 static bool match(Lexer *lx, char expected) {
@@ -110,7 +115,9 @@ static TokenType keyword_or_ident(const char *s, int n) {
         {"nil", TOK_NIL},       {"on", TOK_ON},
         {"every", TOK_EVERY},   {"after", TOK_AFTER},
         {"struct", TOK_STRUCT}, {"const", TOK_CONST},
-        {"match", TOK_MATCH},
+        {"match", TOK_MATCH},   {"defer", TOK_DEFER},
+        {"enum", TOK_ENUM},     {"use", TOK_USE},
+        {"test", TOK_TEST},
     };
     for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) {
         if ((int)strlen(keywords[i].word) == n &&

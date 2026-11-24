@@ -4,6 +4,8 @@
 # path<TAB>part of the error message
 tests/arrays.jlang	arrays aren't available in native code yet (nati
 tests/board.jlang	capture() isn't available in native code yet (na
+tests/compact.jlang	alloc() isn't available in native code yet (nati
+tests/defer_mem.jlang	alloc() isn't available in native code yet (nati
 tests/easy_hardware.jlang	turn_on() isn't available in native code yet; ru
 tests/err_array_bounds.jlang	arrays aren't available in native code yet (nati
 tests/err_bounds.jlang	alloc() isn't available in native code yet (nati
@@ -24,6 +26,7 @@ tests/i2c_spi.jlang	i2c_scan() isn't available in native code yet; r
 tests/memory.jlang	alloc() isn't available in native code yet (nati
 tests/multimodal_kv.jlang	kv_get() isn't available in native code yet (nat
 tests/panel_text.jlang	led_text() isn't available in native code yet; r
+tests/ptt_long_answer.jlang	len() isn't available in native code yet (native
 tests/strings.jlang	len() isn't available in native code yet (native
 tests/strings_build.jlang	joining strings with + isn't available in native
 tests/strings_helpers.jlang	contains() isn't available in native code yet; r

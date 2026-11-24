@@ -31,7 +31,8 @@ typedef enum {
     /* keywords */
     TOK_LET, TOK_FN, TOK_RETURN, TOK_IF, TOK_ELSE, TOK_WHILE, TOK_FOR,
     TOK_IN, TOK_BREAK, TOK_CONTINUE, TOK_TRUE, TOK_FALSE, TOK_NIL, TOK_ON,
-    TOK_EVERY, TOK_AFTER, TOK_STRUCT, TOK_DOT, TOK_CONST, TOK_MATCH,
+    TOK_EVERY, TOK_AFTER, TOK_STRUCT, TOK_DOT, TOK_CONST, TOK_MATCH, TOK_DEFER,
+    TOK_ENUM, TOK_USE, TOK_TEST,
 
     TOK_ERROR,
     TOK_EOF,
@@ -50,6 +51,7 @@ typedef struct {
     const char *start;      /* start of the token being scanned */
     const char *cur;        /* next character to read */
     const char *line_start; /* first character of the current line */
+    const char *limit;      /* optional end boundary (for defer replay) */
     int line;
 } Lexer;
 

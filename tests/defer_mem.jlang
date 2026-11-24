@@ -1,0 +1,27 @@
+// defer with heap allocations: zero leaks across early returns, continue and break.
+fn process(flag) {
+    let a = alloc(16)
+    defer free(a)
+    a[0] = 7
+    if flag == 1 {
+        return a[0]
+    }
+    let b = alloc(32)
+    defer free(b)
+    b[0] = 13
+    return a[0] + b[0]
+}
+
+print(process(1), process(2))
+
+for i in 0..4 {
+    let tmp = alloc(8)
+    defer free(tmp)
+    tmp[0] = i
+    if i == 1 { continue }
+    if i == 3 { break }
+    print("i:", tmp[0])
+}
+// expect: 7 20
+// expect: i: 0
+// expect: i: 2

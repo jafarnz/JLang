@@ -68,6 +68,10 @@ static volatile bool pending_save;
 static volatile bool stop_now;   /* "@jlang stop" */
 static volatile bool inspect_once;     /* "@jlang inspect" */
 static volatile uint32_t watch_ms;     /* "@jlang watch <ms>", 0 = off */
+static uint64_t pin_dirty_mask;
+static uint64_t pin_state_mask;
+static uint32_t last_pin_flush_ms;
+#define PIN_FLUSH_MIN_MS 50
 
 static void write_out(void *ud, const char *data, size_t len) {
     (void)ud;
@@ -102,8 +106,29 @@ static bool b_pin_mode(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+static void flush_watch_pins(uint32_t now_ms, bool force) {
+    if (!watch_ms || pin_dirty_mask == 0) return;
+    if (!force && now_ms - last_pin_flush_ms < PIN_FLUSH_MIN_MS) return;
+    uint64_t dirty = pin_dirty_mask;
+    uint64_t state = pin_state_mask;
+    pin_dirty_mask = 0;
+    last_pin_flush_ms = now_ms;
+    for (int p = 0; p < 64 && dirty; p++) {
+        if (dirty & (1ULL << p)) {
+            printf("@jlang pin %d %d\n", p, (int)((state >> p) & 1ULL));
+            dirty &= ~(1ULL << p);
+        }
+    }
+}
+
 void board_notify_pin(int pin, int level) {
-    if (watch_ms) printf("@jlang pin %d %d\n", pin, level != 0);
+    if (!watch_ms || pin < 0 || pin >= 64) return;
+    uint64_t bit = 1ULL << pin;
+    if (level) pin_state_mask |= bit;
+    else pin_state_mask &= ~bit;
+    pin_dirty_mask |= bit;
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    flush_watch_pins(now_ms, false);
 }
 
 static bool b_pin_write(JlVM *vm, int argc, Value *args, Value *out) {
@@ -446,6 +471,8 @@ static void fire_event(const char *name) {
 static void run_program(const char *src) {
     if (vm) jl_free(vm);
     hardware_reset();
+    pin_dirty_mask = 0;
+    pin_state_mask = 0;
     stop_now = false;
     vm = new_vm();
     if (vm == NULL) {
@@ -507,8 +534,10 @@ void app_main(void) {
             print_inspect();
         }
         uint32_t now_ms = clock_ms(NULL);
+        flush_watch_pins(now_ms, false);
         if (watch_ms && now_ms - last_watch >= watch_ms) {
             last_watch = now_ms;
+            flush_watch_pins(now_ms, true);
             print_inspect();
         }
         /* The BOOT button fires `on button` (press), `on button_hold` (held
