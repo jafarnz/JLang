@@ -1,0 +1,7 @@
+// String helpers reject freed heap strings (use after free).
+// exit: 70
+let s = trim("  bus 179  ")
+free(s)
+print(contains(s, "179"))
+// expect: runtime error (line 5): use after free: this str was freed at line 4 (it was allocated at line 3)
+// expect:   in top-level code, line 5

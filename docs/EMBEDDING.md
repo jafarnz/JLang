@@ -70,6 +70,13 @@ value stack, the call depth, the instruction count and the heap usage. The
 hook can wait (to slow the program down), draw the state, or return `false`
 to stop the program. [Glass](../glass) is built on it.
 
+For live inspection without stepping every instruction, `jl_get_stats(vm, &st)`
+reads the current cycle count, heap usage, peak usage and live block count, and
+`jl_has_handler(vm, "event")` checks whether the loaded script registered an
+`on` handler. The ESP32 firmware (`boards/esp32-vm/`) exposes this over USB
+with `@jlang inspect` (one snapshot) and `@jlang watch <ms>` (periodic
+`@jlang stats {...}`, `@jlang event <name>` and `@jlang pin <n> <0|1>` lines).
+
 ## Building for a device
 
 Copy `src/` except `main.c` and `board_sim.c` into the firmware project. Shrink

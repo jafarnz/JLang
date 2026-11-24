@@ -52,6 +52,7 @@ bool jl_register_native(JlVM *vm, const char *name, JlNativeFn fn, int arity);
 
 JlResult jl_run_source(JlVM *vm, const char *source);
 JlResult jl_emit(JlVM *vm, const char *event);
+bool jl_has_handler(const JlVM *vm, const char *event);
 
 /* Compile without running. With print = true, also show the bytecode. */
 JlResult jl_disassemble_or_check(JlVM *vm, const char *source, bool print);
@@ -99,6 +100,14 @@ bool jl_next_timer(JlVM *vm, uint32_t *due);
 /* Runs every timer that is due at `now`. */
 JlResult jl_run_timers(JlVM *vm, uint32_t now);
 void jl_set_step_hook(JlVM *vm, JlStepFn fn, void *user_data);
+typedef struct {
+    uint32_t heap_used;
+    uint32_t heap_cap;
+    uint32_t heap_peak;
+    uint32_t live_blocks;
+    uint64_t cycles;
+} JlStats;
+void jl_get_stats(const JlVM *vm, JlStats *out);
 void jl_print_stats(JlVM *vm);
 int jl_report_leaks(JlVM *vm);
 void *jl_user_data(JlVM *vm);

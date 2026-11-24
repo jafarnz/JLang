@@ -51,6 +51,11 @@ export async function loadJLang(source) {
       ),
       cstr(opts.answer ?? ""),
     ]
+    if (ex.jlw_set_voice) {
+      const vp = cstr(opts.voice ?? "")
+      ex.jlw_set_voice(vp)
+      ex.jlw_free(vp)
+    }
     const code = ex.jlw_run(...args, opts.heap ?? 0, opts.stats ? 1 : 0)
     for (const p of [args[0], args[2], args[3], args[4]]) ex.jlw_free(p)
 

@@ -1,0 +1,5 @@
+// slice() checks bounds and reports the string length.
+// exit: 70
+let s = slice("abc", 1, 5)
+// expect: runtime error (line 3): slice(): range 1..5 is outside this string (length 3)
+// expect:   in top-level code, line 3

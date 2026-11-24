@@ -1,0 +1,57 @@
+// match statement: ints, consts, multi-value arms, wildcard, loops and functions.
+const MODE_BUS = 0
+const MODE_STUDY = 1
+const MODE_TRAVEL = 2
+
+fn classify(n) {
+    match n {
+        0 => { return 100 }
+        1, 2, 3 => { return 200 }
+        4 => { return 300 }
+        _ => { return 999 }
+    }
+}
+
+print(classify(0), classify(1), classify(2), classify(3), classify(4), classify(9))
+// expect: 100 200 200 200 300 999
+
+// const patterns and expressions evaluated once
+let calls = 0
+fn next_mode() {
+    calls += 1
+    return MODE_STUDY
+}
+
+let label = 0
+match next_mode() {
+    MODE_BUS => { label = 1 }
+    MODE_STUDY => { label = 2 }
+    MODE_TRAVEL => { label = 3 }
+    _ => { label = 4 }
+}
+print(calls, label)                            // expect: 1 2
+
+// nested match, break and continue inside a loop
+let sum = 0
+for i in 0..8 {
+    match i {
+        0, 2 => { continue }
+        5 => { break }
+        3 => {
+            match i * 2 {
+                6 => { sum += 30 }
+                _ => { sum += 1 }
+            }
+        }
+        _ => { sum += i }
+    }
+}
+print(sum)                                     // expect: 35
+
+// match with no wildcard: nothing runs when no arm matches
+let hit = 0
+match 42 {
+    1 => { hit = 1 }
+    2 => { hit = 2 }
+}
+print(hit)                                     // expect: 0

@@ -110,6 +110,7 @@ static TokenType keyword_or_ident(const char *s, int n) {
         {"nil", TOK_NIL},       {"on", TOK_ON},
         {"every", TOK_EVERY},   {"after", TOK_AFTER},
         {"struct", TOK_STRUCT}, {"const", TOK_CONST},
+        {"match", TOK_MATCH},
     };
     for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) {
         if ((int)strlen(keywords[i].word) == n &&
@@ -212,7 +213,10 @@ Token lexer_next(Lexer *lx) {
         if (match(lx, '|')) return make_token(lx, TOK_OR_OR);
         return make_token(lx, match(lx, '=') ? TOK_PIPE_EQ : TOK_PIPE);
     case '!': return make_token(lx, match(lx, '=') ? TOK_BANG_EQ : TOK_BANG);
-    case '=': return make_token(lx, match(lx, '=') ? TOK_EQ_EQ : TOK_EQ);
+    case '=':
+        if (match(lx, '=')) return make_token(lx, TOK_EQ_EQ);
+        if (match(lx, '>')) return make_token(lx, TOK_ARROW);
+        return make_token(lx, TOK_EQ);
     case '<':
         if (match(lx, '<')) return make_token(lx, match(lx, '=') ? TOK_SHL_EQ : TOK_SHL);
         return make_token(lx, match(lx, '=') ? TOK_LE : TOK_LT);

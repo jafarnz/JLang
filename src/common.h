@@ -63,7 +63,7 @@
 
 /* Maximum number of built-in (native C) functions. */
 #ifndef JL_NATIVES_MAX
-#define JL_NATIVES_MAX 64
+#define JL_NATIVES_MAX 128
 #endif
 
 /* Default size of the JLang heap in bytes. */

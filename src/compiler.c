@@ -1097,9 +1097,82 @@ static void continue_stmt(Compiler *c) {
     loop->continues[loop->continue_count++] = emit_jump(c, OP_JUMP);
 }
 
+/* match expr { 0 => { ... } 1, 2 => { ... } _ => { ... } } */
+static void match_stmt(Compiler *c) {
+    Token tok = c->prev;
+    begin_scope(c);
+    expression(c);
+    Token slot_name = {TOK_IDENT, "(match)", 7, tok.line, tok.col};
+    declare_local(c, slot_name);
+    mark_initialized(c);
+    int subject_slot = c->fs->local_count - 1;
+
+    consume(c, TOK_LBRACE, "expected '{' after the match value");
+    int ends[256];
+    int end_count = 0;
+    bool saw_default = false;
+
+    while (!check(c, TOK_RBRACE) && !check(c, TOK_EOF)) {
+        if (saw_default) {
+            error_at_current(c, "'_' must be the last arm in a match");
+            int braces = 0;
+            while (!check(c, TOK_EOF)) {
+                if (check(c, TOK_LBRACE)) braces++;
+                else if (check(c, TOK_RBRACE)) {
+                    if (braces == 0) break;
+                    braces--;
+                }
+                advance(c);
+            }
+            break;
+        }
+        if (c->cur.type == TOK_IDENT && c->cur.length == 1 && c->cur.start[0] == '_') {
+            advance(c);
+            saw_default = true;
+            if (match(c, TOK_COMMA)) {
+                error(c, "'_' can't be combined with other values in a match arm");
+                break;
+            }
+            consume(c, TOK_ARROW, "expected '=>' after '_'");
+            body(c, "expected '{' after '=>'");
+            match(c, TOK_COMMA);
+            continue;
+        }
+        int hits[64];
+        int hit_count = 0;
+        for (;;) {
+            emit2(c, OP_GET_LOCAL, (uint8_t)subject_slot);
+            expression(c);
+            emit(c, OP_EQ);
+            if (match(c, TOK_COMMA)) {
+                int next_pat = emit_jump(c, OP_JUMP_IF_FALSE);
+                if (hit_count < 64) hits[hit_count++] = emit_jump(c, OP_JUMP);
+                else error(c, "too many values in one match arm (max 64)");
+                patch_jump(c, next_pat);
+                continue;
+            }
+            break;
+        }
+        int skip_arm = emit_jump(c, OP_JUMP_IF_FALSE);
+        for (int i = 0; i < hit_count; i++) patch_jump(c, hits[i]);
+        consume(c, TOK_ARROW, "expected '=>' after the match value");
+        body(c, "expected '{' after '=>'");
+        if (end_count < 256) ends[end_count++] = emit_jump(c, OP_JUMP);
+        else error(c, "too many arms in one match (max 256)");
+        patch_jump(c, skip_arm);
+        match(c, TOK_COMMA);
+    }
+
+    consume(c, TOK_RBRACE, "expected '}' to close this match");
+    for (int i = 0; i < end_count; i++) patch_jump(c, ends[i]);
+    end_scope(c);
+}
+
 static void statement(Compiler *c) {
     if (match(c, TOK_IF)) {
         if_stmt(c);
+    } else if (match(c, TOK_MATCH)) {
+        match_stmt(c);
     } else if (match(c, TOK_WHILE)) {
         while_stmt(c);
     } else if (match(c, TOK_FOR)) {

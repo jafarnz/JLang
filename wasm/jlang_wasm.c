@@ -318,6 +318,13 @@ static void write_err(void *ud, const char *d, size_t n) {
     append("\x03", 1);
 }
 
+static char voice_buf[256];
+
+EXPORT(jlw_set_voice) void jlw_set_voice(const char *s) {
+    if (s == NULL) voice_buf[0] = '\0';
+    else snprintf(voice_buf, sizeof voice_buf, "%s", s);
+}
+
 EXPORT(jlw_alloc) void *jlw_alloc(size_t n) { return malloc(n); }
 EXPORT(jlw_free) void jlw_free(void *p) { free(p); }
 EXPORT(jlw_output) const char *jlw_output(void) { return out_buf; }
@@ -361,6 +368,7 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     BoardSimOptions opt;
     board_sim_default_options(&opt);
     if (answer != NULL && answer[0] != '\0') opt.ai_answer = answer;
+    if (voice_buf[0] != '\0') opt.voice_text = voice_buf;
     opt.print_frames = false; /* the page draws the frames */
     opt.frame_sink = on_frame;
     opt.max_ms = SIM_SECONDS * 1000;

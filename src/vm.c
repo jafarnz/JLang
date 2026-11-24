@@ -1242,6 +1242,21 @@ JlResult jl_emit(JlVM *vm, const char *event) {
     return JL_NO_HANDLER;
 }
 
+bool jl_has_handler(const JlVM *vm, const char *event) {
+    for (int i = 0; i < vm->event_count; i++) {
+        if (strcmp(vm->events[i].name, event) == 0) return true;
+    }
+    return false;
+}
+
+void jl_get_stats(const JlVM *vm, JlStats *out) {
+    out->heap_used = vm->heap.used_bytes;
+    out->heap_cap = vm->heap.cap;
+    out->heap_peak = vm->heap.peak_bytes;
+    out->live_blocks = vm->heap.live_blocks;
+    out->cycles = vm->cycles;
+}
+
 bool jl_next_timer(JlVM *vm, uint32_t *due) {
     bool any = false;
     for (int i = 0; i < vm->timer_count; i++) {

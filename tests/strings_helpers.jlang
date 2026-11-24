@@ -1,0 +1,31 @@
+// String helpers: contains, starts_with, ends_with, slice, trim.
+print(contains("Bus 179 arriving", "179"))     // expect: true
+print(contains("Bus 179 arriving", "999"))     // expect: false
+print(contains("abc", ""))                     // expect: true
+
+print(starts_with("Bus 179", "Bus "))          // expect: true
+print(starts_with("No bus", "Bus "))           // expect: false
+print(ends_with("Bus 179", "179"))             // expect: true
+print(ends_with("Bus 179", "180"))             // expect: false
+
+let raw = "  \tBus 179\r\n "
+let clean = trim(raw)
+print(clean)                                   // expect: Bus 179
+let num = slice(clean, 4, len(clean))
+print(num)                                     // expect: 179
+free(num)
+free(clean)
+
+let empty = trim("   \t\n ")
+print(len(empty))                              // expect: 0
+free(empty)
+
+// Match on heap strings (by content, not identity).
+let mode = fmt("{}", "study")
+match mode {
+    "assist" => { print("a") }
+    "study" => { print("s") }
+    _ => { print("other") }
+}
+// expect: s
+free(mode)

@@ -13,21 +13,25 @@ tests/err_easy_hardware.jlang	tone() isn't available in native code yet; run i
 tests/err_fragmented.jlang	alloc() isn't available in native code yet (nati
 tests/err_leak.jlang	alloc() isn't available in native code yet (nati
 tests/err_print_freed.jlang	joining strings with + isn't available in native
+tests/err_slice.jlang	slice() isn't available in native code yet (nati
 tests/err_struct_field.jlang	structs aren't available in native code yet (nat
 tests/err_timer.jlang	every and after blocks aren't available in nativ
 tests/err_uaf_reused.jlang	alloc() isn't available in native code yet (nati
+tests/err_uaf_string.jlang	trim() isn't available in native code yet (nativ
 tests/err_use_after_free.jlang	alloc() isn't available in native code yet (nati
 tests/fmt_pad.jlang	fmt() isn't available in native code yet; run it
 tests/i2c_spi.jlang	i2c_scan() isn't available in native code yet; r
 tests/memory.jlang	alloc() isn't available in native code yet (nati
+tests/multimodal_kv.jlang	kv_get() isn't available in native code yet (nat
 tests/panel_text.jlang	led_text() isn't available in native code yet; r
 tests/strings.jlang	len() isn't available in native code yet (native
 tests/strings_build.jlang	joining strings with + isn't available in native
+tests/strings_helpers.jlang	contains() isn't available in native code yet; r
 tests/structs.jlang	structs aren't available in native code yet (nat
 tests/timers.jlang	every and after blocks aren't available in nativ
 examples/clock.jlang	fmt() isn't available in native code yet; run it
 examples/graph.jlang	array() isn't available in native code yet; run 
-examples/iris.jlang	capture() isn't available in native code yet (na
+examples/iris.jlang	chime() isn't available in native code yet; run 
 examples/life.jlang	random() isn't available in native code yet; run
 examples/packet.jlang	alloc() isn't available in native code yet (nati
 examples/parking.jlang	distance() isn't available in native code yet; r

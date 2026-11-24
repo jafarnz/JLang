@@ -526,6 +526,86 @@ static bool bi_rgb(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* ---- strings ------------------------------------------------------ */
+
+static bool get_str(JlVM *vm, const char *fn, int arg_no, Value v, const char **s, uint32_t *len) {
+    if (v.type != VAL_STR) {
+        return jl_error(vm, "%s(): argument %d must be a string, got %s", fn, arg_no, value_type_name(v));
+    }
+    if (!jl_get_string(vm, v, s, len)) return vm_freed_error(vm, v.as.ref, "str");
+    return true;
+}
+
+static bool bi_contains(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    const char *s, *sub;
+    uint32_t n, m;
+    if (!get_str(vm, "contains", 1, args[0], &s, &n) || !get_str(vm, "contains", 2, args[1], &sub, &m)) return false;
+    if (m == 0) {
+        *out = bool_val(true);
+        return true;
+    }
+    bool found = false;
+    for (uint32_t i = 0; i + m <= n; i++) {
+        if (memcmp(s + i, sub, m) == 0) {
+            found = true;
+            break;
+        }
+    }
+    *out = bool_val(found);
+    return true;
+}
+
+static bool bi_starts_with(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    const char *s, *pre;
+    uint32_t n, m;
+    if (!get_str(vm, "starts_with", 1, args[0], &s, &n) || !get_str(vm, "starts_with", 2, args[1], &pre, &m))
+        return false;
+    *out = bool_val(m <= n && (m == 0 || memcmp(s, pre, m) == 0));
+    return true;
+}
+
+static bool bi_ends_with(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    const char *s, *suf;
+    uint32_t n, m;
+    if (!get_str(vm, "ends_with", 1, args[0], &s, &n) || !get_str(vm, "ends_with", 2, args[1], &suf, &m))
+        return false;
+    *out = bool_val(m <= n && (m == 0 || memcmp(s + n - m, suf, m) == 0));
+    return true;
+}
+
+/* slice(s, start, end): bytes start..end (end exclusive), as a new heap str. */
+static bool bi_slice(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    const char *s;
+    uint32_t n;
+    int32_t start, end;
+    if (!get_str(vm, "slice", 1, args[0], &s, &n) || !jl_get_int(vm, "slice", 2, args[1], &start) ||
+        !jl_get_int(vm, "slice", 3, args[2], &end))
+        return false;
+    if (start < 0 || end < start || (uint32_t)end > n) {
+        return jl_error(vm, "slice(): range %d..%d is outside this string (length %u)", (int)start, (int)end,
+                        (unsigned)n);
+    }
+    return jl_new_string(vm, s + start, (uint32_t)(end - start), out);
+}
+
+static bool is_space(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+
+/* trim(s): s without leading or trailing whitespace, as a new heap str. */
+static bool bi_trim(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    const char *s;
+    uint32_t n;
+    if (!get_str(vm, "trim", 1, args[0], &s, &n)) return false;
+    uint32_t lo = 0, hi = n;
+    while (lo < hi && is_space(s[lo])) lo++;
+    while (hi > lo && is_space(s[hi - 1])) hi--;
+    return jl_new_string(vm, s + lo, hi - lo, out);
+}
+
 static bool bi_asm(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
     (void)args;
@@ -561,4 +641,9 @@ void jl_register_core(JlVM *vm) {
     jl_register_native(vm, "stop_timer", bi_stop_timer, 0);
     jl_register_native(vm, "rgb", bi_rgb, 3);
     jl_register_native(vm, "array", bi_array, -1);
+    jl_register_native(vm, "contains", bi_contains, 2);
+    jl_register_native(vm, "starts_with", bi_starts_with, 2);
+    jl_register_native(vm, "ends_with", bi_ends_with, 2);
+    jl_register_native(vm, "slice", bi_slice, 3);
+    jl_register_native(vm, "trim", bi_trim, 1);
 }

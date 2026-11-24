@@ -132,6 +132,20 @@ for i in 0..8 {        // 0, 1, ..., 7 (the end is exclusive)
 `for i in a..b` counts up by one from `a` while `i < b`. An empty or backwards
 range runs zero times.
 
+`match` compares one value against arms in order. Multiple values can share an
+arm with commas, and `_` is an optional catch-all that must come last:
+
+```jlang
+match mode {
+    "assist" => { print("assistive mode") }
+    "study", "travel" => { print("everyday mode") }
+    _ => { print("other") }
+}
+```
+
+`match` works on numbers, consts, strings, bools and `nil`, and compiles to
+native RISC-V code as well as bytecode.
+
 ## Functions
 
 ```jlang
@@ -342,6 +356,10 @@ registers and bit fields as consts.
 | `map(v, a, b, c, d)` | rescale `v` from the range `a`..`b` to `c`..`d` |
 | `clamp(v, lo, hi)` | `v`, kept between `lo` and `hi` |
 | `rgb(r, g, b)` | a colour as `0xRRGGBB`, each part 0..255 |
+| `contains(s, sub)` | true if `sub` appears inside `s` |
+| `starts_with(s, prefix)` / `ends_with(s, suffix)` | true if `s` starts or ends with the given string |
+| `slice(s, start, end)` | bytes `start..end` (end exclusive) as a new heap `str` you free |
+| `trim(s)` | `s` without leading or trailing whitespace, as a new heap `str` you free |
 
 ### printf placeholders
 
@@ -367,11 +385,20 @@ device firmware provides the real ones with the same names.
 | `delay(ms)` | wait (virtual time in the simulator unless `--realtime`) |
 | `millis()` | milliseconds since start |
 | `capture()` | take a photo, returns a `buf` (JPEG) you must free |
-| `ask(photo, question)` | ask the vision AI, returns a heap `str` you must free |
+| `record(ms)` | record audio from the microphone (`1..30000` ms), returns a `buf` you must free (simulate with `--voice`) |
+| `ask(photo_or_nil, prompt_or_audio[, instruction])` | ask the multimodal AI with an optional photo and a question string or recorded audio `buf`, returns a heap `str` you must free |
 | `speak(text, lang)` | say text aloud; `lang` defaults to `"en"` |
+| `chime(kind)` | play a short sound cue: `"ready"`, `"working"` or `"error"` |
+| `kv_set(key, val)` | save a string under `key` (1..15 chars) in persistent flash (NVS on ESP32) |
+| `kv_get(key[, default])` | read a saved string as a new heap `str` you must free, or `nil` if missing and no default is given |
+| `kv_del(key)` | delete a saved key; returns `true` if it existed |
 
 The simulated `ask()` replies with the text from `--answer` and takes 1.8 s of
-virtual time; `capture()` takes 150 ms; `speak()` about 60 ms per character.
+virtual time; `capture()` takes 150 ms; `record(ms)` captures the text from
+`--voice` and takes `ms`; `speak()` about 60 ms per character; `chime()` takes
+120 ms; `--kv key=val` pre-populates `kv_get()`. On the ESP32 firmware, the
+BOOT button fires `on button` (short press), `on button_hold` (held 600 ms or
+more) and `on button_release` (released).
 
 ### Parts
 

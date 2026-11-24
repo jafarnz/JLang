@@ -12,12 +12,16 @@
 #include "panel.h"
 #include "vcd.h"
 
-#define SIM_PINS 40
+#define SIM_PINS 49
+#define SIM_KV_MAX 32
+#define SIM_KV_KEY_MAX 16
+#define SIM_KV_VAL_MAX 256
 
 typedef struct {
     bool realtime;               /* delay() really waits */
     int pin_inputs[SIM_PINS];    /* value pin_read() returns, -1 = default */
     const char *ai_answer;       /* what the mocked ask() replies */
+    const char *voice_text;      /* what the mocked record() captures */
     int analog_inputs[SIM_PINS]; /* value analog() returns, -1 = 2048 (a knob halfway) */
     int distance_cm;             /* what distance() measures */
     int panel_w, panel_h;        /* LED panel size, default 60 x 7 */
@@ -28,6 +32,9 @@ typedef struct {
     uint32_t max_ms;             /* stop once this much time has passed, 0 = never */
     Vcd *vcd;                    /* record pin changes for a waveform viewer, or NULL */
     int temperature_c;           /* what the simulated I2C temperature sensor measures */
+    char kv_keys[SIM_KV_MAX][SIM_KV_KEY_MAX];
+    char kv_vals[SIM_KV_MAX][SIM_KV_VAL_MAX];
+    int kv_count;
 } BoardSimOptions;
 
 void board_sim_default_options(BoardSimOptions *o);

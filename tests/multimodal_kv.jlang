@@ -1,0 +1,37 @@
+// args: --voice halal? --answer certified_halal --kv mode=study
+// Multimodal record()/ask(), chime(), and persistent kv_get/kv_set/kv_del.
+let m0 = kv_get("mode", "assist")
+print(m0)                                      // expect: study
+free(m0)
+
+let missing = kv_get("nope")
+print(missing)                                 // expect: nil
+
+let def = kv_get("nope", "fallback")
+print(def)                                     // expect: fallback
+free(def)
+
+kv_set("note", "Level 3B pillar 14")
+let note = kv_get("note")
+print(note)                                    // expect: Level 3B pillar 14
+free(note)
+print(kv_del("note"), kv_del("note"))          // expect: true false
+
+chime("ready")                                 // expect: [sim      0ms] chime: ready
+let photo = capture()                          // expect: [sim    270ms] camera: photo #1 captured (22 bytes)
+let voice = record(1500)                       // expect: [sim   1770ms] mic: recorded 1500 ms (10 bytes)
+let ans = ask(photo, voice, "Be brief.")
+// expect: [sim   1770ms] AI: sending photo + audio ("halal?") + "Be brief."
+// expect: [sim   3570ms] AI: answered
+free(photo)
+free(voice)
+print(ans)                                     // expect: certified_halal
+free(ans)
+
+// Voice-only ask (nil photo)
+let v2 = record(500)                           // expect: [sim   4070ms] mic: recorded 500 ms (10 bytes)
+let a2 = ask(nil, v2)
+// expect: [sim   4070ms] AI: sending audio ("halal?")
+// expect: [sim   5870ms] AI: answered
+free(v2)
+free(a2)

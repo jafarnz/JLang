@@ -61,10 +61,13 @@ extern const char script_start[] asm("_binary_app_jlang_start");
 
 /* The program currently loaded, and one waiting to replace it. */
 #define PROGRAM_MAX (32 * 1024)
+#define BUTTON_HOLD_MS 600
 static JlVM *vm;
 static char *volatile pending;   /* a program the reader task received */
 static volatile bool pending_save;
 static volatile bool stop_now;   /* "@jlang stop" */
+static volatile bool inspect_once;     /* "@jlang inspect" */
+static volatile uint32_t watch_ms;     /* "@jlang watch <ms>", 0 = off */
 
 static void write_out(void *ud, const char *data, size_t len) {
     (void)ud;
@@ -99,12 +102,18 @@ static bool b_pin_mode(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+void board_notify_pin(int pin, int level) {
+    if (watch_ms) printf("@jlang pin %d %d\n", pin, level != 0);
+}
+
 static bool b_pin_write(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
     (void)out;
     int32_t pin, level;
     if (!get_pin(vm, "pin_write", args[0], &pin) || !jl_get_int(vm, "pin_write", 2, args[1], &level)) return false;
-    gpio_set_level((gpio_num_t)pin, level != 0);
+    int bit = level != 0;
+    gpio_set_level((gpio_num_t)pin, bit);
+    board_notify_pin((int)pin, bit);
     return true;
 }
 
@@ -136,6 +145,83 @@ static bool b_millis(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
     (void)args;
     *out = int_val((int32_t)(esp_timer_get_time() / 1000));
+    return true;
+}
+
+/* ---- persistent key-value store (NVS) --------------------------------- */
+
+static bool kv_key(JlVM *vm, const char *fn, Value v, char out_key[16]) {
+    const char *s;
+    uint32_t n;
+    if (v.type != VAL_STR || !jl_get_string(vm, v, &s, &n)) return jl_error(vm, "%s(): key must be a string", fn);
+    if (n == 0 || n > 15) return jl_error(vm, "%s(): key length must be 1 to 15 characters", fn);
+    memcpy(out_key, s, n);
+    out_key[n] = '\0';
+    return true;
+}
+
+static bool b_kv_set(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    char key[16];
+    const char *s;
+    uint32_t n;
+    if (!kv_key(vm, "kv_set", args[0], key)) return false;
+    if (args[1].type != VAL_STR || !jl_get_string(vm, args[1], &s, &n))
+        return jl_error(vm, "kv_set(): value must be a string");
+    if (n > 255) return jl_error(vm, "kv_set(): value can be at most 255 bytes");
+    char val[256];
+    memcpy(val, s, n);
+    val[n] = '\0';
+    nvs_handle_t h;
+    if (nvs_open("jlang_kv", NVS_READWRITE, &h) != ESP_OK) return jl_error(vm, "kv_set(): couldn't open flash storage");
+    esp_err_t e = nvs_set_str(h, key, val);
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    if (e != ESP_OK) return jl_error(vm, "kv_set(): couldn't save key '%s'", key);
+    return true;
+}
+
+static bool b_kv_get(JlVM *vm, int argc, Value *args, Value *out) {
+    if (argc < 1 || argc > 2) return jl_error(vm, "kv_get() takes 1 or 2 arguments: (key[, default])");
+    char key[16];
+    if (!kv_key(vm, "kv_get", args[0], key)) return false;
+    nvs_handle_t h;
+    if (nvs_open("jlang_kv", NVS_READONLY, &h) == ESP_OK) {
+        size_t len = 0;
+        if (nvs_get_str(h, key, NULL, &len) == ESP_OK && len > 0 && len <= 256) {
+            char val[256];
+            if (nvs_get_str(h, key, val, &len) == ESP_OK) {
+                nvs_close(h);
+                return jl_new_string(vm, val, (uint32_t)(len - 1), out);
+            }
+        }
+        nvs_close(h);
+    }
+    if (argc == 2) {
+        const char *d;
+        uint32_t dn;
+        if (args[1].type != VAL_STR || !jl_get_string(vm, args[1], &d, &dn))
+            return jl_error(vm, "kv_get(): default value must be a string");
+        return jl_new_string(vm, d, dn, out);
+    }
+    *out = nil_val();
+    return true;
+}
+
+static bool b_kv_del(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    char key[16];
+    if (!kv_key(vm, "kv_del", args[0], key)) return false;
+    bool removed = false;
+    nvs_handle_t h;
+    if (nvs_open("jlang_kv", NVS_READWRITE, &h) == ESP_OK) {
+        if (nvs_erase_key(h, key) == ESP_OK) {
+            nvs_commit(h);
+            removed = true;
+        }
+        nvs_close(h);
+    }
+    *out = bool_val(removed);
     return true;
 }
 
@@ -229,6 +315,7 @@ static void reader_task(void *arg) {
         line[n] = '\0';
         n = 0;
         unsigned len = 0;
+        unsigned interval = 0;
         bool save = sscanf(line, "@jlang save %u", &len) == 1;
         if (save || sscanf(line, "@jlang run %u", &len) == 1) {
             if (len == 0 || len > PROGRAM_MAX) {
@@ -252,6 +339,10 @@ static void reader_task(void *arg) {
         } else if (strcmp(line, "@jlang stop") == 0) {
             stop_now = true;
             if (vm) jl_request_stop(vm);
+        } else if (strcmp(line, "@jlang inspect") == 0) {
+            inspect_once = true;
+        } else if (sscanf(line, "@jlang watch %u", &interval) == 1) {
+            watch_ms = interval == 0 ? 0 : (interval < 100 ? 100 : interval);
         } else if (strcmp(line, "@jlang forget") == 0) {
             nvs_handle_t h;
             if (nvs_open("jlang", NVS_READWRITE, &h) == ESP_OK) {
@@ -319,6 +410,9 @@ static JlVM *new_vm(void) {
     jl_register_native(v, "pin_read", b_pin_read, 1);
     jl_register_native(v, "delay", b_delay, 1);
     jl_register_native(v, "millis", b_millis, 0);
+    jl_register_native(v, "kv_set", b_kv_set, 2);
+    jl_register_native(v, "kv_get", b_kv_get, -1);
+    jl_register_native(v, "kv_del", b_kv_del, 1);
     jl_register_native(v, "mmio_read32", b_mmio_read32, 1);
     jl_register_native(v, "mmio_write32", b_mmio_write32, 2);
     jl_register_native(v, "mmio_read8", b_mmio_read8, 1);
@@ -327,6 +421,25 @@ static JlVM *new_vm(void) {
     jl_seed_random(v, esp_random());
     jl_set_clock(v, clock_ms, NULL);
     return v;
+}
+
+static void print_inspect(void) {
+    JlStats st = {0};
+    if (vm) jl_get_stats(vm, &st);
+    printf("@jlang stats {\"chip\":\"%s\",\"ms\":%u,\"running\":%s,\"cycles\":%llu,"
+           "\"heap_used\":%u,\"heap_cap\":%u,\"heap_peak\":%u,\"blocks\":%u}\n",
+           CONFIG_IDF_TARGET, (unsigned)clock_ms(NULL), vm ? "true" : "false",
+           (unsigned long long)st.cycles, (unsigned)st.heap_used, (unsigned)st.heap_cap,
+           (unsigned)st.heap_peak, (unsigned)st.live_blocks);
+}
+
+static void fire_event(const char *name) {
+    if (!vm) return;
+    if (watch_ms) printf("@jlang event %s\n", name);
+    if (jl_emit(vm, name) == JL_RUNTIME_ERROR) {
+        jl_free(vm);
+        vm = NULL;
+    }
 }
 
 /* Runs a program's top level. Its timers and events run from app_main. */
@@ -369,6 +482,9 @@ void app_main(void) {
     gpio_set_pull_mode(BUTTON_PIN, GPIO_PULLUP_ONLY);
     int last = 1;
     uint32_t last_poll = 0;
+    uint32_t press_ms = 0;
+    bool hold_fired = false;
+    uint32_t last_watch = 0;
     for (;;) {
         if (pending) {
             char *src = pending;
@@ -386,14 +502,34 @@ void app_main(void) {
                 printf("@jlang finished 0\n");
             }
         }
-        /* The BOOT button fires the script's `on button` handler. It is
-           read every 20 ms, which also ignores contact bounce. */
-        if (clock_ms(NULL) - last_poll >= 20) {
-            last_poll = clock_ms(NULL);
+        if (inspect_once) {
+            inspect_once = false;
+            print_inspect();
+        }
+        uint32_t now_ms = clock_ms(NULL);
+        if (watch_ms && now_ms - last_watch >= watch_ms) {
+            last_watch = now_ms;
+            print_inspect();
+        }
+        /* The BOOT button fires `on button` (press), `on button_hold` (held
+           >= 600 ms) and `on button_release` (release). Read every 20 ms to
+           ignore contact bounce. If the script doesn't define `button_hold`,
+           `button` fires immediately on press. */
+        if (now_ms - last_poll >= 20) {
+            last_poll = now_ms;
             int now = gpio_get_level(BUTTON_PIN);
-            if (vm && last == 1 && now == 0 && jl_emit(vm, "button") == JL_RUNTIME_ERROR) {
-                jl_free(vm);
-                vm = NULL;
+            bool uses_hold = vm && jl_has_handler(vm, "button_hold");
+            if (last == 1 && now == 0) {
+                press_ms = now_ms;
+                hold_fired = false;
+                if (!uses_hold) fire_event("button");
+            } else if (last == 0 && now == 0 && uses_hold && !hold_fired &&
+                       now_ms - press_ms >= BUTTON_HOLD_MS) {
+                hold_fired = true;
+                fire_event("button_hold");
+            } else if (last == 0 && now == 1) {
+                if (uses_hold && !hold_fired) fire_event("button");
+                fire_event("button_release");
             }
             last = now;
         }

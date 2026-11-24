@@ -1,31 +1,39 @@
-// iris.jlang - behaviour script for Iris, an AI vision assistant for
-// visually impaired commuters.
+// iris.jlang - behaviour script for Iris, a programmable pocket vision
+// and voice assistant.
 //
-// On the device, this file lives on the SD card. The firmware (C)
-// provides the hardware built-ins: capture(), ask(), speak(), pins.
-// Everything Iris DOES is decided here, so it can be changed without
-// recompiling or reflashing the firmware. A bug in this script is
-// reported as an error; it can't crash the device.
+// On the device, this file lives in internal flash (or on a microSD card).
+// The firmware (C) provides the hardware built-ins: capture(), record(),
+// ask(), speak(), chime(), kv_get(), kv_set() and pins. Everything Iris
+// DOES is decided here, so it can be changed without reflashing.
 //
-// Test it on a laptop (camera, AI and speaker are simulated):
+// Test it on a laptop (camera, mic, AI and speaker are simulated):
 //   jlang run examples/iris.jlang --emit bus_button
-//   jlang run examples/iris.jlang --emit read_button --answer "Exit B, Bugis MRT"
+//   jlang run examples/iris.jlang --emit bus_hold --voice "Is this halal?" --answer "Yes, certified halal."
+//   jlang run examples/iris.jlang --emit describe_button --emit bus_button --kv mode=study
 
-let LANG = "en"          // "en", "zh", "ms" or "ta"
-let STATUS_LED = 21
+const STATUS_LED = 43        // D6 on XIAO ESP32-S3 (GPIO 21 is microSD CS)
+let LANG = "en"              // "en", "zh", "ms" or "ta"
 let requests = 0
 
 pin_mode(STATUS_LED, "out")
 
+fn remember_and_speak(answer) {
+    let clean = trim(answer)
+    kv_set("last", clean)
+    speak(clean, LANG)
+    free(clean)
+}
+
 // Take a photo, ask the AI about it, say the answer, free the memory.
 fn look_and_say(question) {
-    pin_write(STATUS_LED, 1)           // LED on while working
+    pin_write(STATUS_LED, 1)
+    chime("working")
     let start = millis()
 
-    let photo = capture()              // buf on the JLang heap
-    let answer = ask(photo, question)  // str on the JLang heap
-    free(photo)                        // free as early as possible
-    speak(answer, LANG)
+    let photo = capture()
+    let answer = ask(photo, question)
+    free(photo)
+    remember_and_speak(answer)
     free(answer)
 
     pin_write(STATUS_LED, 0)
@@ -33,16 +41,81 @@ fn look_and_say(question) {
     printf("request #{} took {} ms\n", requests, millis() - start)
 }
 
-on bus_button {
-    look_and_say("Read the service number of the bus arriving. Reply only: Bus <number>, or: No bus.")
+// Point the camera and ask anything out loud using the built-in microphone.
+fn point_and_ask() {
+    pin_write(STATUS_LED, 1)
+    chime("working")
+    let start = millis()
+
+    let photo = capture()
+    let voice = record(3000)
+    let answer = ask(photo, voice, "Answer briefly in one or two clear sentences.")
+    free(photo)
+    free(voice)
+    remember_and_speak(answer)
+    free(answer)
+
+    pin_write(STATUS_LED, 0)
+    requests += 1
+    printf("voice request #{} took {} ms\n", requests, millis() - start)
 }
 
+// Button 1 (short press): primary action for the active mode.
+on bus_button {
+    let mode = kv_get("mode", "assist")
+    match mode {
+        "assist" => {
+            look_and_say("Read the service number of the bus arriving. Reply only: Bus <number>, or: No bus.")
+        }
+        "translate" => {
+            look_and_say("Translate the main sign, menu or label in this photo into clear English.")
+        }
+        "study" => {
+            look_and_say("Identify the electronic component, diagram or problem shown and explain it briefly.")
+        }
+        "memory" => {
+            look_and_say("Describe what is in view in one short note so I can remember it later.")
+        }
+        _ => {
+            look_and_say("Describe what is in front of me in one short sentence.")
+        }
+    }
+    free(mode)
+}
+
+// Button 1 (hold): push-to-talk Point and Ask in any mode.
+on bus_hold {
+    point_and_ask()
+}
+
+// Button 2: read text aloud in any mode.
 on read_button {
     look_and_say("Read the most important text in this photo aloud, briefly.")
 }
 
+// Button 3: cycle between modes and save the choice to flash.
 on describe_button {
-    look_and_say("Describe what is in front of me in one short sentence.")
+    let mode = kv_get("mode", "assist")
+    let next = "assist"
+    match mode {
+        "assist" => { next = "translate" }
+        "translate" => { next = "study" }
+        "study" => { next = "memory" }
+        _ => { next = "assist" }
+    }
+    free(mode)
+    kv_set("mode", next)
+    let msg = fmt("Mode: {}", next)
+    speak(msg, LANG)
+    free(msg)
 }
 
+// Button 4 (BOOT): repeat the last spoken answer.
+on repeat_button {
+    let last = kv_get("last", "Nothing to repeat yet.")
+    speak(last, LANG)
+    free(last)
+}
+
+chime("ready")
 print("Iris ready")

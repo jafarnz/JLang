@@ -525,7 +525,8 @@ static void gen_native_call(Gen *g, int native, int argc) {
         return;
     } else {
         static const char *heap_fns[] = {"alloc", "free", "len", "read16", "read32", "write16", "write32",
-                                         "mem", "memmap", "capture", "ask", "speak", NULL};
+                                         "mem", "memmap", "capture", "record", "ask", "speak",
+                                         "slice", "trim", "kv_get", "kv_set", "kv_del", NULL};
         bool heap = false;
         for (int i = 0; heap_fns[i]; i++) heap |= strcmp(name, heap_fns[i]) == 0;
         if (heap)

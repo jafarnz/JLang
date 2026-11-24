@@ -82,6 +82,8 @@ static void usage(FILE *f) {
         "  --distance <cm>               what distance() measures (default 100)\n"
         "  --temperature <C>             what the I2C temperature sensor reads (default 24)\n"
         "  --answer <text>               what the simulated ask() replies\n"
+        "  --voice <text>                what the simulated record() captures\n"
+        "  --kv <key>=<value>            pre-populate persistent kv_get() storage\n"
         "  --heap <bytes>                heap size (default %u)\n"
         "  --max-cycles <n>              stop after n instructions (catches endless loops)\n"
         "  --realtime                    make delay() actually wait; in a terminal,\n"
@@ -199,6 +201,27 @@ static bool parse_args(int argc, char **argv, Options *o) {
             o->emits[o->emit_count++] = argv[++i];
         } else if (strcmp(a, "--answer") == 0 && has_value) {
             o->board.ai_answer = argv[++i];
+        } else if (strcmp(a, "--voice") == 0 && has_value) {
+            o->board.voice_text = argv[++i];
+        } else if (strcmp(a, "--kv") == 0 && has_value) {
+            const char *kv = argv[++i];
+            const char *eq = strchr(kv, '=');
+            if (eq == NULL || eq == kv || (size_t)(eq - kv) >= SIM_KV_KEY_MAX ||
+                strlen(eq + 1) >= SIM_KV_VAL_MAX) {
+                fprintf(stderr, "jlang: --kv expects <key>=<value> (key 1..%d chars), like --kv mode=study\n",
+                        SIM_KV_KEY_MAX - 1);
+                return false;
+            }
+            if (o->board.kv_count == SIM_KV_MAX) {
+                fprintf(stderr, "jlang: too many --kv options (max %d)\n", SIM_KV_MAX);
+                return false;
+            }
+            int idx = o->board.kv_count++;
+            size_t kn = (size_t)(eq - kv);
+            memcpy(o->board.kv_keys[idx], kv, kn);
+            o->board.kv_keys[idx][kn] = '\0';
+            size_t vn = strlen(eq + 1);
+            memcpy(o->board.kv_vals[idx], eq + 1, vn + 1);
         } else if (strcmp(a, "--heap") == 0 && has_value) {
             char *end;
             long v = strtol(argv[++i], &end, 10);

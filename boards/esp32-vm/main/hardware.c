@@ -232,6 +232,7 @@ static bool set_level(JlVM *vm, const char *fn, Value v, int which) {
     gpio_set_direction((gpio_num_t)pin, GPIO_MODE_OUTPUT);
     level[pin] = (int8_t)(which < 0 ? !level[pin] : which);
     gpio_set_level((gpio_num_t)pin, (uint32_t)level[pin]);
+    board_notify_pin(pin, level[pin]);
     return true;
 }
 

@@ -37,6 +37,9 @@ static struct {
     int last_pressed[SIM_PINS]; /* pressed(): the level at the previous call, 0 = unknown */
     Panel panel;
     uint32_t led_xy;
+    char kv_keys[SIM_KV_MAX][SIM_KV_KEY_MAX];
+    char kv_vals[SIM_KV_MAX][SIM_KV_VAL_MAX];
+    int kv_count;
 } sim;
 
 /* Records a signal for --vcd. Names look like "pin2" or "pin7_tone_hz". */
@@ -53,6 +56,7 @@ void board_sim_default_options(BoardSimOptions *o) {
     memset(o, 0, sizeof *o);
     for (int i = 0; i < SIM_PINS; i++) o->pin_inputs[i] = -1;
     o->ai_answer = "Bus 179 is arriving.";
+    o->voice_text = "What is this?";
     for (int i = 0; i < SIM_PINS; i++) o->analog_inputs[i] = -1;
     o->distance_cm = 100;
     o->temperature_c = 24;
@@ -177,19 +181,72 @@ static bool sim_capture(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
-/* ask(photo, prompt) -> heap str with the AI's answer. Free it when done. */
-static bool sim_ask(JlVM *vm, int argc, Value *args, Value *out) {
+/* record(ms) -> buf holding a simulated microphone recording. Free it when done. */
+static bool sim_record(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
-    const char *prompt;
-    uint32_t n;
-    if (args[0].type != VAL_BUF) {
-        return jl_error(vm, "ask(): argument 1 must be a photo buf from capture(), got %s",
-                        value_type_name(args[0]));
+    int32_t ms;
+    if (!jl_get_int(vm, "record", 1, args[0], &ms)) return false;
+    if (ms <= 0 || ms > 30000) {
+        return jl_error(vm, "record(): duration must be 1 to 30000 ms, got %d", (int)ms);
     }
-    if (args[1].type != VAL_STR || !jl_get_string(vm, args[1], &prompt, &n)) {
-        return jl_error(vm, "ask(): argument 2 must be the question string");
+    const char *v = sim.opt.voice_text ? sim.opt.voice_text : "What is this?";
+    size_t vlen = strlen(v);
+    uint32_t total = (uint32_t)(4 + vlen);
+    uint8_t *data;
+    if (!jl_new_buf(vm, total, out, &data)) return false;
+    memcpy(data, "JLAV", 4);
+    memcpy(data + 4, v, vlen);
+    advance_time((uint32_t)ms);
+    jl_outf(vm, "[sim %6ums] mic: recorded %d ms (%u bytes)\n", (unsigned)sim.now_ms, (int)ms, (unsigned)total);
+    return time_left(vm);
+}
+
+/* ask(photo_or_nil, prompt_or_audio [, extra_prompt]) -> heap str. Free it when done. */
+static bool sim_ask(JlVM *vm, int argc, Value *args, Value *out) {
+    if (argc < 2 || argc > 3) {
+        return jl_error(vm, "ask() takes 2 or 3 arguments: (photo_or_nil, prompt_or_audio[, instruction])");
     }
-    jl_outf(vm, "[sim %6ums] AI: sending photo + \"%.*s\"\n", (unsigned)sim.now_ms, (int)n, prompt);
+    bool has_photo = args[0].type != VAL_NIL;
+    if (has_photo) {
+        uint8_t *pdata;
+        uint32_t plen;
+        if (args[0].type != VAL_BUF) {
+            return jl_error(vm, "ask(): argument 1 must be a photo buf from capture() or nil, got %s",
+                            value_type_name(args[0]));
+        }
+        if (!jl_get_bytes(vm, "ask", args[0], &pdata, &plen)) return false;
+    }
+    const char *extra = NULL;
+    uint32_t extra_len = 0;
+    if (argc == 3) {
+        if (args[2].type != VAL_STR || !jl_get_string(vm, args[2], &extra, &extra_len)) {
+            return jl_error(vm, "ask(): argument 3 must be an instruction string");
+        }
+    }
+    if (args[1].type == VAL_STR) {
+        const char *prompt;
+        uint32_t n;
+        if (!jl_get_string(vm, args[1], &prompt, &n)) {
+            return jl_error(vm, "ask(): argument 2 must be a live string or audio buf");
+        }
+        jl_outf(vm, "[sim %6ums] AI: sending %s\"%.*s\"\n", (unsigned)sim.now_ms,
+                has_photo ? "photo + " : "", (int)n, prompt);
+    } else if (args[1].type == VAL_BUF) {
+        uint8_t *adata;
+        uint32_t alen;
+        if (!jl_get_bytes(vm, "ask", args[1], &adata, &alen)) return false;
+        if (alen >= 4 && memcmp(adata, "JLAV", 4) == 0) {
+            jl_outf(vm, "[sim %6ums] AI: sending %saudio (\"%.*s\")%s%.*s%s\n", (unsigned)sim.now_ms,
+                    has_photo ? "photo + " : "", (int)(alen - 4), (const char *)(adata + 4),
+                    extra ? " + \"" : "", (int)extra_len, extra ? extra : "", extra ? "\"" : "");
+        } else {
+            jl_outf(vm, "[sim %6ums] AI: sending %saudio (%u bytes)%s%.*s%s\n", (unsigned)sim.now_ms,
+                    has_photo ? "photo + " : "", (unsigned)alen,
+                    extra ? " + \"" : "", (int)extra_len, extra ? extra : "", extra ? "\"" : "");
+        }
+    } else {
+        return jl_error(vm, "ask(): argument 2 must be a question string or an audio buf from record()");
+    }
     advance_time(ASK_MS);
     const char *a = sim.opt.ai_answer;
     if (!jl_new_string(vm, a, (uint32_t)strlen(a), out)) return false;
@@ -212,6 +269,106 @@ static bool sim_speak(JlVM *vm, int argc, Value *args, Value *out) {
     jl_outf(vm, "[sim %6ums] speaker (%.*s): \"%.*s\"\n", (unsigned)sim.now_ms, (int)ln, lang,
             (int)n, text);
     advance_time(60u * n); /* about 60 ms per character of speech */
+    return true;
+}
+
+/* chime("ready"|"working"|"error") */
+static bool sim_chime(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    const char *kind;
+    uint32_t n;
+    if (args[0].type != VAL_STR || !jl_get_string(vm, args[0], &kind, &n)) {
+        return jl_error(vm, "chime(): argument 1 must be \"ready\", \"working\" or \"error\"");
+    }
+    bool ok = (n == 5 && memcmp(kind, "ready", 5) == 0) ||
+              (n == 7 && memcmp(kind, "working", 7) == 0) ||
+              (n == 5 && memcmp(kind, "error", 5) == 0);
+    if (!ok) return jl_error(vm, "chime(): expected \"ready\", \"working\" or \"error\", got \"%.*s\"", (int)n, kind);
+    jl_outf(vm, "[sim %6ums] chime: %.*s\n", (unsigned)sim.now_ms, (int)n, kind);
+    advance_time(120);
+    return true;
+}
+
+/* ---- persistent key-value store (NVS on ESP32, in-memory here) ------- */
+
+static bool kv_check_key(JlVM *vm, const char *fn, Value v, const char **k, uint32_t *n) {
+    if (v.type != VAL_STR || !jl_get_string(vm, v, k, n)) {
+        return jl_error(vm, "%s(): key must be a string", fn);
+    }
+    if (*n == 0 || *n >= SIM_KV_KEY_MAX) {
+        return jl_error(vm, "%s(): key length must be 1 to %d characters", fn, SIM_KV_KEY_MAX - 1);
+    }
+    return true;
+}
+
+static int kv_find(const char *k, uint32_t n) {
+    for (int i = 0; i < sim.kv_count; i++) {
+        if (strlen(sim.kv_keys[i]) == n && memcmp(sim.kv_keys[i], k, n) == 0) return i;
+    }
+    return -1;
+}
+
+static bool sim_kv_set(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc, (void)out;
+    const char *k, *v;
+    uint32_t kn, vn;
+    if (!kv_check_key(vm, "kv_set", args[0], &k, &kn)) return false;
+    if (args[1].type != VAL_STR || !jl_get_string(vm, args[1], &v, &vn)) {
+        return jl_error(vm, "kv_set(): value must be a string");
+    }
+    if (vn >= SIM_KV_VAL_MAX) {
+        return jl_error(vm, "kv_set(): value can be at most %d bytes", SIM_KV_VAL_MAX - 1);
+    }
+    int idx = kv_find(k, kn);
+    if (idx < 0) {
+        if (sim.kv_count == SIM_KV_MAX) return jl_error(vm, "kv_set(): storage is full (max %d keys)", SIM_KV_MAX);
+        idx = sim.kv_count++;
+        memcpy(sim.kv_keys[idx], k, kn);
+        sim.kv_keys[idx][kn] = '\0';
+    }
+    memcpy(sim.kv_vals[idx], v, vn);
+    sim.kv_vals[idx][vn] = '\0';
+    return true;
+}
+
+/* kv_get(key) -> heap str or nil; kv_get(key, default) -> heap str (always free it). */
+static bool sim_kv_get(JlVM *vm, int argc, Value *args, Value *out) {
+    if (argc < 1 || argc > 2) return jl_error(vm, "kv_get() takes 1 or 2 arguments: (key[, default])");
+    const char *k;
+    uint32_t kn;
+    if (!kv_check_key(vm, "kv_get", args[0], &k, &kn)) return false;
+    int idx = kv_find(k, kn);
+    if (idx >= 0) {
+        return jl_new_string(vm, sim.kv_vals[idx], (uint32_t)strlen(sim.kv_vals[idx]), out);
+    }
+    if (argc == 2) {
+        const char *d;
+        uint32_t dn;
+        if (args[1].type != VAL_STR || !jl_get_string(vm, args[1], &d, &dn)) {
+            return jl_error(vm, "kv_get(): default value must be a string");
+        }
+        return jl_new_string(vm, d, dn, out);
+    }
+    *out = nil_val();
+    return true;
+}
+
+static bool sim_kv_del(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    const char *k;
+    uint32_t kn;
+    if (!kv_check_key(vm, "kv_del", args[0], &k, &kn)) return false;
+    int idx = kv_find(k, kn);
+    if (idx < 0) {
+        *out = bool_val(false);
+        return true;
+    }
+    sim.kv_count--;
+    if (idx < sim.kv_count) {
+        memcpy(sim.kv_keys[idx], sim.kv_keys[sim.kv_count], SIM_KV_KEY_MAX);
+        memcpy(sim.kv_vals[idx], sim.kv_vals[sim.kv_count], SIM_KV_VAL_MAX);
+    }
+    *out = bool_val(true);
     return true;
 }
 
@@ -745,6 +902,11 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     panel_free(&sim.panel);
     memset(&sim, 0, sizeof sim);
     sim.opt = *o;
+    sim.kv_count = o->kv_count < SIM_KV_MAX ? o->kv_count : SIM_KV_MAX;
+    for (int i = 0; i < sim.kv_count; i++) {
+        memcpy(sim.kv_keys[i], o->kv_keys[i], SIM_KV_KEY_MAX);
+        memcpy(sim.kv_vals[i], o->kv_vals[i], SIM_KV_VAL_MAX);
+    }
     panel_init(&sim.panel, o->panel_w, o->panel_h);
     sim.panel.print = o->print_frames;
     sim.panel.ansi = o->ansi_frames;
@@ -757,8 +919,13 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     jl_register_native(vm, "delay", sim_delay, 1);
     jl_register_native(vm, "millis", sim_millis, 0);
     jl_register_native(vm, "capture", sim_capture, 0);
-    jl_register_native(vm, "ask", sim_ask, 2);
+    jl_register_native(vm, "record", sim_record, 1);
+    jl_register_native(vm, "ask", sim_ask, -1);
     jl_register_native(vm, "speak", sim_speak, -1);
+    jl_register_native(vm, "chime", sim_chime, 1);
+    jl_register_native(vm, "kv_set", sim_kv_set, 2);
+    jl_register_native(vm, "kv_get", sim_kv_get, -1);
+    jl_register_native(vm, "kv_del", sim_kv_del, 1);
     jl_register_native(vm, "mmio_read32", sim_mmio_read32, 1);
     jl_register_native(vm, "mmio_write32", sim_mmio_write32, 2);
     jl_register_native(vm, "mmio_read8", sim_mmio_read8, 1);

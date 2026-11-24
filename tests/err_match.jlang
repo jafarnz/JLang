@@ -1,0 +1,9 @@
+// '_' must be the last arm in a match.
+// exit: 65
+match 1 {
+    _ => { print("any") }
+    1 => { print("one") }
+}
+// expect: error (line 5, col 5): '_' must be the last arm in a match
+// expect:      5 |     1 => { print("one") }
+// expect:        |     ^
