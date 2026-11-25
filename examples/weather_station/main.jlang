@@ -1,0 +1,30 @@
+// main.jlang - combines two independent I2C drivers (TMP102 sensor + display)
+// that both declare `const ADDRESS`, `let ready`, and `fn init()`.
+//
+// Desktop:  jlang run examples/weather_station/main.jlang --temperature 29
+// Bundle:   jlang bundle examples/weather_station/main.jlang -o weather.jlang
+//           (runs unchanged in the browser playground and on ESP32 firmware)
+
+use "tmp102.jlang" as sensor
+use "display.jlang" as display
+
+sensor.init()
+display.init()
+
+let c = sensor.read_c()
+let st = sensor.classify(c)
+
+match st {
+    sensor.Status.Cool => {
+        display.show(c, "COOL", "cyan")
+    }
+    sensor.Status.Warm => {
+        display.show(c, "WARM", "green")
+    }
+    sensor.Status.Hot => {
+        display.show(c, "HOT", "red")
+    }
+}
+
+printf("sensor={x2} display={x2} temp={}C frames={}\n",
+    sensor.ADDRESS, display.ADDRESS, c, display.frames)

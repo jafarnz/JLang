@@ -30,15 +30,15 @@ On macOS or Linux:
 curl -fsSL https://jafarniaz.com/jlang/install.sh | sh
 ```
 
-The script downloads a prebuilt `jlang` for your computer into `~/.local/bin`, without `sudo`, or builds it from source if there isn't one. The other ways:
+The script downloads the prebuilt `jlang` archive for your architecture from the latest [GitHub release](https://github.com/jafarnz/JLang/releases) into `~/.local/bin` without `sudo` (falling back to building from source if needed). Other ways:
 
 | | |
 |---|---|
-| Homebrew | `brew install jafarnz/tap/jlang` |
-| npm, on any OS with Node 18 | `npx jlang-cli run hello.jlang`, or `npm install -g jlang-cli` for a `jlang` command |
-| Windows | `jlang-windows-x86_64.zip` from the [releases](https://github.com/jafarnz/JLang/releases), or the npm package |
+| Prebuilt archives (Linux, macOS, Windows) | Download `jlang-<os>-<arch>.tar.gz` or `jlang-windows-x86_64.zip` with `SHA256SUMS` from [GitHub Releases](https://github.com/jafarnz/JLang/releases) |
 | From source | `git clone https://github.com/jafarnz/JLang && cd JLang && make`, then `./build/jlang` (`make install` puts it on your `PATH`) |
-| No install | the [playground](https://jafarniaz.com/jlang/playground) runs everything in the browser |
+| No install | The [playground](https://jafarniaz.com/jlang/playground) runs JLang in WebAssembly in the browser and flashes ESP32 boards over Web Serial |
+
+Packaging recipes for Homebrew (`packaging/homebrew/jlang.rb`) and npm (`packaging/npm/`) live in this repository; public Homebrew tap and npm registry publishing are not enabled yet.
 
 Then:
 
@@ -48,11 +48,11 @@ cd blinky
 jlang run main.jlang --emit button
 ```
 
-`jlang check` compiles a file without running it, `xray` prints each bytecode instruction and the value stack as it runs, `dis` prints the bytecode, `repl` starts an interactive prompt, and `help` lists everything.
+Key commands: `jlang check` (compile only), `jlang test` (isolated unit tests with leak checking), `jlang fmt` (zero-config formatter), `jlang bundle` (combine `use` modules into a single file for browser WASM or ESP32), `jlang xray`, `jlang dis`, `jlang repl`, `jlang emu`, `jlang build`, `jlang wcet`, and `jlang svd`.
 
 ## Compiling to RISC-V
 
-JLang also compiles programs to RV32IM machine code, which is experimental and covers a subset of the language. The same program can run on both:
+JLang also compiles programs to RV32IM machine code, covering a strictly checked subset of the language. The same program can run on both:
 
 ```bash
 ./build/jlang run examples/registers.jlang    # on the bytecode VM
@@ -61,15 +61,15 @@ JLang also compiles programs to RV32IM machine code, which is experimental and c
 
 `--asm` prints the generated assembly, `--listing` each instruction's address and encoding, and `--pipeline` how a 5-stage pipeline runs it, with its stalls and flushes. `jlang build` writes assembly for a real board, `jlang wcet` works out the worst-case time of each event handler from the machine code, and `jlang svd` turns a chip's SVD register description into consts. Native code reaches hardware registers with `mmio_read32` and `mmio_write32` and can include instructions with `asm("...")`.
 
-Native programs have no heap and no run-time types, so a program either behaves exactly as it does on the VM or is rejected when compiling, with the reason. The test suite runs every example and test program both ways and compares the output; the ones native code can't run are listed with the reason in [tests/native-skips.txt](tests/native-skips.txt). Another test checks that the machine code is byte-for-byte what the GNU assembler produces.
+Native programs have no dynamic heap and no run-time types, so a program either behaves identically to the VM or is rejected at compile time with the reason (including rejecting `free()`, non-int arrays/structs, and dynamic heap built-ins). See [docs/LANGUAGE.md#native-code](docs/LANGUAGE.md#native-code) for the complete native subset table. The parity suite (`tests/native.sh`) runs every example and test program both ways and verifies every expected rejection in [tests/native-skips.txt](tests/native-skips.txt); `tests/gnu.sh` verifies that the assembler output is byte-identical to GNU `as`.
 
 ## Using JLang in firmware
 
-There are two ways to run JLang on a microcontroller, and [boards/](boards) has working setups for both.
+There are two ways to run JLang on a microcontroller, and [boards/](boards) has the full board support matrix, memory footprints, wiring, and recovery steps.
 
-Native code from `jlang build` runs on any RISC-V microcontroller, such as the ESP32-C3, ESP32-C6 or Raspberry Pi Pico 2. A board provides seven small C functions for printing, pins and time, described in [boards/jl_hal.h](boards/jl_hal.h).
+Native code from `jlang build` runs on RISC-V microcontrollers (CI-built with ESP-IDF for ESP32-C3 and ESP32-C6; an untested Raspberry Pi Pico 2 HAL template is also included in [boards/pico2](boards/pico2)). A board provides seven small C functions for printing, pins and time, described in [boards/jl_hal.h](boards/jl_hal.h).
 
-The bytecode VM runs the full language inside the firmware of any 32-bit microcontroller, including Xtensa chips such as the ESP32-S3. The firmware registers its hardware as built-in functions and fires events when buttons are pressed, while a JLang script decides what the device does. [Iris](examples/iris.jlang), a wearable camera that tells visually impaired commuters which bus is arriving, uses JLang in this way. The [embedding guide](https://jafarniaz.com/jlang/docs/guides/embedding) describes the API.
+The bytecode VM runs the full language inside the firmware of 32-bit microcontrollers, including Xtensa chips such as the ESP32-S3 (CI-built merged binaries for ESP32-S3, ESP32-C6, and ESP32-C3 are served in the playground's Web Serial installer). Multi-file projects using `use "..." as alias` can be deployed to the browser or stock ESP32 firmware with `jlang bundle entry.jlang -o app.jlang`; see [examples/weather_station](examples/weather_station) for a combined sensor and display project. The [embedding guide](https://jafarniaz.com/jlang/docs/guides/embedding) describes the C API.
 
 ## Repository layout
 

@@ -1,0 +1,26 @@
+// display.jlang - OLED + LED panel status display driver.
+// Intentionally declares its own ADDRESS, ready flag, and init() to prove
+// module namespaces prevent symbol collisions when combining two drivers.
+
+const ADDRESS = 0x3C
+
+let ready = false
+let frames = 0
+
+fn init() {
+    i2c_write(ADDRESS, 0x00, 0xAF)
+    led_clear()
+    ready = true
+}
+
+fn show(temp_c, label, colour) {
+    if !ready {
+        init()
+    }
+    led_clear()
+    let msg = fmt("{}C {}", temp_c, label)
+    defer free(msg)
+    led_text(msg, 1, 0, colour)
+    led_show()
+    frames += 1
+}

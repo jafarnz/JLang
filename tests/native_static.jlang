@@ -28,14 +28,6 @@ move_point(3, -2)
 print(sum_lut(), len(zeros), zeros[0], zeros[1])
 print(ones[0], ones[2], grid[0][1], grid[1][0])
 print(p.x, p.y)
-
-free(lut)
-free(zeros)
-free(ones)
-free(grid[0])
-free(grid[1])
-free(grid)
-free(p)
 // expect: 105 4 0 99
 // expect: 7 7 2 30
 // expect: 8 10

@@ -20,7 +20,7 @@ jobs:
           - { os: ubuntu-latest, target: linux-x86_64 }
           - { os: ubuntu-24.04-arm, target: linux-arm64 }
           - { os: macos-latest, target: macos-arm64 }
-          - { os: macos-13, target: macos-x86_64 }
+          - { os: macos-latest, target: macos-x86_64 }
           - { os: ubuntu-latest, target: windows-x86_64 }
     runs-on: ${{ matrix.os }}
     steps:
@@ -34,6 +34,8 @@ jobs:
           elif [[ "${{ matrix.target }}" == linux-* ]]; then
             make LDFLAGS=-static
             make test
+          elif [[ "${{ matrix.target }}" == macos-x86_64 ]]; then
+            make CC="clang -arch x86_64"
           else
             make
             make test

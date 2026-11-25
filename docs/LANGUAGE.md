@@ -547,18 +547,23 @@ found, `70` runtime error.
 
 ## Native code
 
-`jlang emu` and `jlang build` compile a program to RISC-V machine code instead of running it on the VM. This is experimental and covers a subset of the language, with one rule: a program either behaves exactly as it does on the VM, or it is a compile error that says why. `tests/native.sh` checks every example and test program both ways, and `tests/native-skips.txt` lists, with the reason, the ones native code doesn't run.
+`jlang emu` and `jlang build` compile a program to RV32IM machine code instead of running it on the VM. Native mode follows one strict contract: a program either produces the exact same behavior as the VM, or it is rejected at compile time with an error explaining why. `tests/native.sh` runs every example and test program both ways, and `tests/native-skips.txt` verifies the expected compile-time rejection for every program outside the native subset (including `tests/bool_array.jlang` and `tests/err_array_uaf.jlang`).
 
-The native code generator promotes up to six function locals into callee-saved registers (`s2`–`s7`) across loops and calls, keeps expression values in a 7-register cache (`t3`–`t6`, `a5`–`a7`), folds constant and immediate operations (`addi`, `andi`, `ori`, `xori`, `slli`, `srai`), and fuses comparisons with conditional branches into single RV32IM branch instructions. Native code supports exhaustive `match`, `defer`, `enum`, `use`, top-level static `.bss` arrays (`[a, b]`, `array(n[, v])`, 2D arrays, `len(arr)`, runtime bounds checks) and structs (`struct S { ... }`, compile-time field offsets, `free()` no-op), `abs`, `min`, `max`, `clamp`, `sat_add`, `sat_sub`, `fix_mul` and `fix_div`, and skips `test` blocks with zero code size overhead.
+The code generator promotes up to six function locals into callee-saved registers (`s2`–`s7`) across loops and calls, keeps expression values in a 7-register cache (`t3`–`t6`, `a5`–`a7`), folds constant and immediate operations, and fuses comparisons directly into conditional branch instructions.
 
-Native code has no dynamic heap and no types at run time; every value is a 32-bit word. So `alloc`, `compact`, `ring`, `pack`, `unpack`, `read16`, `read32`, `write16`, `write32`, indexing strings, `mem`, `memmap`, `capture`, `record`, `record_start`, `record_stop`, `ask`, `speak`, `kv_*`, dynamic arrays/structs inside functions, printing whole arrays/structs, string building, timers, the part built-ins, I2C and SPI, `led_text` and `led_size` are compile errors. Functions can be given only numbers and functions and can return only numbers or bools. Arithmetic on a bool, nil or string is a compile error, values of different types compare unequal, and a variable that holds a bool, string or function keeps that type. `led`, `led_clear`, `led_show`, `led_width`, `led_height` and `rgb` work, through the board's `jl_hal_led_*` functions. `jlang emu --pipeline` shows how a 5-stage pipeline runs the code, and `jlang wcet` the worst-case cycles of each handler. Two built-ins exist for native code:
+| Feature | Native RV32IM status | Notes |
+|---|---|---|
+| 32-bit ints, bools, nil, string literals, bit slicing (`x[i]`, `x[hi..lo]`) | Supported | Arithmetic on bool/nil/str is a compile error; variables keep their type |
+| `if`/`else`, `while`, `for`, exhaustive `match`, `defer`, `const`, `enum`, `use ... [as alias]` | Supported | `test` blocks are skipped with zero code size overhead |
+| Functions and function values | Supported | Parameters must be numbers or functions; return values must be numbers or bools |
+| Top-level static `.bss` arrays (`[1, 2]`, `array(n[, v])`, 2D int arrays, `len(arr)`) | Supported (ints only) | Runtime bounds trap matches VM; bool/str/mixed arrays and arrays inside functions/loops are rejected |
+| Top-level static `.bss` structs (`struct S { a, b }`) | Supported (int fields only) | Compile-time field offsets; non-int fields and structs inside functions/loops are rejected |
+| `print`/`printf`, `abs`/`min`/`max`/`clamp`/`sat_add`/`sat_sub`/`fix_mul`/`fix_div`, `u8`/`i8`/`u16`/`i16`, `assert`, `cycles`, GPIO pins, `delay`/`millis`, `on` events, LED panel (`led`, `led_clear`, `led_show`, `led_width`, `led_height`, `rgb`) | Supported | `cycles()` uses `rdcycle` (works on emulator; use `millis()` on ESP32 hardware) |
+| `mmio_read32`/`mmio_write32`/`mmio_read8`/`mmio_write8`, `asm(literal)` | Supported | `mmio_*` also simulated on VM; `asm()` is native-only |
+| `free()`, `alloc()`, `compact()`, `ring()`, `pack()`/`unpack()`, `read16`/`read32`/`write16`/`write32`, `mem`/`memmap` | Rejected at compile time | Native code has no dynamic heap; `free()` is rejected rather than silently ignored |
+| `fmt()`, string `+`, string indexing, `len(str)`, `slice`/`trim`/`contains`, timers (`every`/`after`), parts, I2C/SPI, `kv_*`, camera/audio/AI built-ins | Rejected at compile time | Run on the bytecode VM (`jlang run` or `boards/esp32-vm`) |
 
-| Function | Description |
-|---|---|
-| `mmio_read32(addr)` / `mmio_write32(addr, v)` | read or write a 32-bit hardware register; `mmio_read8` and `mmio_write8` do the same for one byte |
-| `asm(text)` | insert RISC-V instructions; separate them with `;` or newlines; the text must be a string literal |
-
-The VM simulates the same registers as the emulator, so `mmio_*` also works with `jlang run`; `asm` only works in native code. Inline assembly may use the temporary registers `t0`–`t6` and `a0`–`a7` freely, but must leave `s0`, `s1` and `sp` as it found them, because JLang uses them for its stacks.
+Inline assembly (`asm("...")`) may use `t0`–`t6` and `a0`–`a7` freely, and must leave `s0`, `s1`, and `sp` unchanged (`s2`–`s7` local promotion is disabled in functions containing `asm()`).
 
 ## Limits
 

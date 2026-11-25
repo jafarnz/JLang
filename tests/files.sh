@@ -117,5 +117,26 @@ if [[ $rc -eq 1 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL
 rc=$?
 if [[ $rc -eq 0 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: fmt -w then --check (rc=$rc)"; fi
 
+# Namespaced modules (`use "file.jlang" as alias`) + `jlang bundle` (VM + Native RISC-V + weather_station)
+out="$("$BIN" run "$DIR/tests/modules/ns_main.jlang" 2>&1)"
+if [[ "$out" == "72 60 74 163 20" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: namespaced modules run ($out)"; fi
+
+out="$("$BIN" emu "$DIR/tests/modules/ns_main.jlang" 2>&1)"
+if [[ "$out" == "72 60 74 163 20" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: namespaced modules emu ($out)"; fi
+
+"$BIN" bundle "$DIR/tests/modules/ns_main.jlang" -o "$TMP/ns_bundled.jlang" 2>&1
+out="$("$BIN" run "$TMP/ns_bundled.jlang" 2>&1)"
+if [[ "$out" == "72 60 74 163 20" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: bundled ns_main run ($out)"; fi
+
+out="$("$BIN" emu "$TMP/ns_bundled.jlang" 2>&1)"
+if [[ "$out" == "72 60 74 163 20" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: bundled ns_main emu ($out)"; fi
+
+out="$("$BIN" run "$DIR/examples/weather_station/main.jlang" --temperature 29 2>&1)"
+if [[ "$out" == *"sensor=0x48 display=0x3C temp=29C frames=1"* ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: weather_station run ($out)"; fi
+
+"$BIN" bundle "$DIR/examples/weather_station/main.jlang" -o "$TMP/weather_bundled.jlang" 2>&1
+out="$("$BIN" run "$TMP/weather_bundled.jlang" --temperature 29 2>&1)"
+if [[ "$out" == *"sensor=0x48 display=0x3C temp=29C frames=1"* ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: weather_station bundled run ($out)"; fi
+
 echo "files: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

@@ -19,6 +19,10 @@ Mostly because it does less. Every JLang number is a 32-bit integer in a fixed 8
 
 MicroPython is the better choice for a large program that needs its libraries. JLang's aim is to make what the hardware does visible, and being quick is a side effect of keeping it small.
 
-## On a board
+## On a board (not yet measured on physical hardware)
 
-These numbers are from a computer. On an ESP32 both are about 20 to 50 times slower, but the ratio should be similar. To check it once a board is connected: run each `.jlang` file from the playground's Run on device button with `let t = millis()` at the top and `print(millis() - t)` at the end, and each `.py` file with MicroPython's `time.ticks_ms()`.
+All numbers above are **desktop x86_64 Linux measurements** comparing the JLang bytecode VM against MicroPython's Unix port. Neither runtime has been benchmarked on a physical ESP32 board yet.
+
+For native RV32IM codegen (`jlang emu`), `bench/bits.jlang` executes in 34,841,599 RV32IM instructions (down 4.73x from the initial 164.7M unoptimized backend after adding `s2`–`s7` local register promotion and the 7-register expression cache).
+
+To reproduce an on-board timing comparison once an ESP32 is connected: run each `.jlang` file from the playground's **Run on device** button wrapped with `let t = millis()` and `print(millis() - t)`, and run the matching `.py` file on MicroPython with `time.ticks_ms()`.

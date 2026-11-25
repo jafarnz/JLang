@@ -833,9 +833,6 @@ static void gen_native_call(Gen *g, int native, int argc) {
     } else if (strcmp(name, "len") == 0 && top(g, 0).kind == K_ARR) {
         out(g, "    lw a0, %d(s1)\n    lw a0, 0(a0)\n", arg_off(argc, 0));
         result_in_a0 = true;
-    } else if (strcmp(name, "free") == 0 && (top(g, 0).kind == K_ARR || top(g, 0).kind == K_STRUCT)) {
-        /* Static .bss arrays and structs need no runtime free; allow free() for VM parity. */
-        nil_result = true;
     } else {
         static const char *heap_fns[] = {"alloc", "free", "len", "read16", "read32", "write16", "write32",
                                          "mem", "memmap", "compact", "ring", "pack", "unpack",
@@ -1553,8 +1550,8 @@ static void gen_function(Gen *g, int fi) {
                 }
                 int32_t count = nslot.imm;
                 Kind fill_k = argc == 2 ? top(g, 0) : kind_of(K_INT);
-                if (argc == 2 && (fill_k.kind == K_STR || fill_k.kind == K_ARR || fill_k.kind == K_STRUCT)) {
-                    error(g, "in native code, array(n, value) only supports integer or bool initial values");
+                if (argc == 2 && fill_k.kind != K_INT) {
+                    error(g, "in native code, array(n, value) only supports int initial values; run it with `jlang run` instead");
                     break;
                 }
                 int id = add_static(g, (uint32_t)count + 1u);
@@ -1655,6 +1652,10 @@ static void gen_function(Gen *g, int fi) {
             }
             if (top(g, 1).kind == K_ARR) {
                 Kind arr_k = top(g, 1);
+                if (top(g, 0).kind != K_INT) {
+                    error(g, "an array index must be an int, got %s", kind_name(top(g, 0)));
+                    break;
+                }
                 const char *ra, *rb;
                 int fa, fb;
                 vpop_two(g, &ra, &rb, &fa, &fb);
@@ -1697,6 +1698,14 @@ static void gen_function(Gen *g, int fi) {
             }
             if (top(g, 2).kind == K_ARR) {
                 Kind arr_k = top(g, 2);
+                if (top(g, 1).kind != K_INT) {
+                    error(g, "an array index must be an int, got %s", kind_name(top(g, 1)));
+                    break;
+                }
+                if (arr_k.index == 1 ? (top(g, 0).kind != K_ARR || top(g, 0).index != 0) : top(g, 0).kind != K_INT) {
+                    error(g, "in native code, static arrays only hold ints (or nested int arrays); run it with `jlang run` instead");
+                    break;
+                }
                 spill_all(g);
                 int ok = new_label(g);
                 out(g, "    lw t0, -12(s1)\n    lw t1, -8(s1)\n    lw t3, -4(s1)\n    lw t2, 0(t0)\n");
@@ -1720,7 +1729,16 @@ static void gen_function(Gen *g, int fi) {
             break;
         case OP_INDEX_SET:
             if (top(g, 2).kind == K_ARR) {
+                Kind arr_k = top(g, 2);
                 Kind val_k = top(g, 0);
+                if (top(g, 1).kind != K_INT) {
+                    error(g, "an array index must be an int, got %s", kind_name(top(g, 1)));
+                    break;
+                }
+                if (arr_k.index == 1 ? (val_k.kind != K_ARR || val_k.index != 0) : val_k.kind != K_INT) {
+                    error(g, "in native code, static arrays only hold ints (or nested int arrays); run it with `jlang run` instead");
+                    break;
+                }
                 spill_all(g);
                 int ok = new_label(g);
                 out(g, "    lw t0, -12(s1)\n    lw t1, -8(s1)\n    lw t3, -4(s1)\n    lw t2, 0(t0)\n");
@@ -1771,6 +1789,10 @@ static void gen_function(Gen *g, int fi) {
         }
         case OP_INIT_FIELD: {
             uint8_t slot = ch->code[off + 1];
+            if (top(g, 0).kind != K_INT) {
+                error(g, "in native code, static struct fields only hold ints; run it with `jlang run` instead");
+                break;
+            }
             int fv;
             const char *rv = vpop_reg(g, "t0", &fv);
             const char *rb = vpeek_reg(g, "t1");
@@ -1824,6 +1846,10 @@ static void gen_function(Gen *g, int fi) {
                 break;
             }
             Kind vk = top(g, 0);
+            if (vk.kind != K_INT) {
+                error(g, "in native code, static struct fields only hold ints; run it with `jlang run` instead");
+                break;
+            }
             const char *rb, *rv;
             int fb, fv;
             vpop_two(g, &rb, &rv, &fb, &fv);
@@ -1849,16 +1875,17 @@ static void gen_function(Gen *g, int fi) {
                 break;
             }
             uint16_t count = u16_at(ch->code, off + 1);
+            bool all_int = true;
             bool all_arr = count > 0;
             for (int i = 0; i < (int)count; i++) {
                 Kind ek = top(g, (int)count - 1 - i);
-                if (ek.kind != K_ARR) all_arr = false;
-                if (ek.kind == K_STR || ek.kind == K_STRUCT) {
-                    error(g, "in native code, static arrays only hold ints, bools or nested arrays");
-                    break;
-                }
+                if (ek.kind != K_INT) all_int = false;
+                if (ek.kind != K_ARR || ek.index != 0) all_arr = false;
             }
-            if (g->failed) break;
+            if (!all_int && !all_arr) {
+                error(g, "in native code, static arrays only hold ints (or nested int arrays); run it with `jlang run` instead");
+                break;
+            }
             spill_all(g);
             int id = add_static(g, (uint32_t)count + 1u);
             out(g, "    la t0, jl_static_%d\n    li t1, %u\n    sw t1, 0(t0)\n", id, (unsigned)count);

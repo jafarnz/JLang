@@ -59,6 +59,13 @@ typedef struct Loop {
 #define MAX_DEFERS 64
 #define MAX_USE_DEPTH 16
 #define MAX_USED_FILES 128
+#define MAX_MOD_ALIASES 64
+
+typedef struct {
+    char alias[64];
+    int mod_id;
+    int owner_mod;
+} ModAlias;
 
 typedef struct {
     Lexer lx;
@@ -89,6 +96,8 @@ typedef struct {
     const char *file_path; /* NULL for root file, normalized path inside 'use' */
     const char *base_path; /* normalized path of current file for relative 'use' */
     bool in_use;
+    int current_mod;       /* 0 = root / flat import, >= 1 = namespaced module */
+    int next_mod_id;
     Lexer lx;
     Token cur;
     Token prev;
@@ -99,13 +108,16 @@ typedef struct {
     int errors;
     FnState *fs;
 
-    /* Header-free multi-file `use "path.jlang"` state. */
+    /* Header-free multi-file `use "path.jlang" [as alias]` state. */
     const char *use_stack[MAX_USE_DEPTH];
     int use_depth;
     char *used_files[MAX_USED_FILES];
+    int used_mod_ids[MAX_USED_FILES];
     int used_count;
     char *owned_srcs[MAX_USED_FILES];
     int owned_src_count;
+    ModAlias aliases[MAX_MOD_ALIASES];
+    int alias_count;
 
     /* The most recent plain variable read. Lets `reg[3] = 1` write the
      * changed int back into the variable `reg`. */
@@ -430,9 +442,33 @@ static int resolve_local(Compiler *c, const Token *name) {
     return -1;
 }
 
-static int global_slot(Compiler *c, Token name) {
-    int i = vm_global_find(c->vm, name.start, name.length);
-    if (i < 0) i = vm_global_add(c->vm, name.start, name.length);
+static int qualify_name(int mod_id, const char *name, int len, char *out, size_t size) {
+    if (mod_id <= 0) {
+        if ((size_t)len >= size) len = (int)size - 1;
+        memcpy(out, name, (size_t)len);
+        out[len] = '\0';
+        return len;
+    }
+    int n = snprintf(out, size, "m%d$%.*s", mod_id, len, name);
+    if (n < 0) return 0;
+    if ((size_t)n >= size) return (int)size - 1;
+    return n;
+}
+
+static int find_alias(const Compiler *c, const char *name, int len) {
+    for (int i = 0; i < c->alias_count; i++) {
+        if (c->aliases[i].owner_mod == c->current_mod &&
+            (int)strlen(c->aliases[i].alias) == len &&
+            memcmp(c->aliases[i].alias, name, (size_t)len) == 0) {
+            return c->aliases[i].mod_id;
+        }
+    }
+    return -1;
+}
+
+static int global_slot_raw(Compiler *c, const char *name, int len) {
+    int i = vm_global_find(c->vm, name, len);
+    if (i < 0) i = vm_global_add(c->vm, name, len);
     if (i < 0) {
         error(c, "too many global names (max 256)");
         return 0;
@@ -440,20 +476,39 @@ static int global_slot(Compiler *c, Token name) {
     return i;
 }
 
-static int global_use(Compiler *c, Token name) {
-    int i = global_slot(c, name);
+static int global_use_raw(Compiler *c, const char *name, int len, Token tok) {
+    int i = global_slot_raw(c, name, len);
     Global *g = &c->vm->globals[i];
     if (!g->declared && g->use_line == 0) {
-        g->use_line = name.line;
-        g->use_col = name.col;
+        g->use_line = tok.line;
+        g->use_col = tok.col;
         g->use_src = c->src;
         g->use_file = c->file_path;
     }
     return i;
 }
 
+static int global_use(Compiler *c, Token name) {
+    if (c->current_mod > 0) {
+        char qname[128];
+        int qlen = qualify_name(c->current_mod, name.start, name.length, qname, sizeof qname);
+        int qi = vm_global_find(c->vm, qname, qlen);
+        if (qi >= 0 && c->vm->globals[qi].declared) return qi;
+        int bi = vm_global_find(c->vm, name.start, name.length);
+        if (bi >= 0 && c->vm->globals[bi].declared) return bi;
+        return global_use_raw(c, qname, qlen, name);
+    }
+    return global_use_raw(c, name.start, name.length, name);
+}
+
 static int global_declare(Compiler *c, Token name) {
-    int i = global_slot(c, name);
+    if (find_alias(c, name.start, name.length) >= 0) {
+        errorf(c, "'%.*s' is already used as a module alias", name.length, name.start);
+        return 0;
+    }
+    char qname[128];
+    int qlen = qualify_name(c->current_mod, name.start, name.length, qname, sizeof qname);
+    int i = global_slot_raw(c, qname, qlen);
     Global *g = &c->vm->globals[i];
     if (g->declared) {
         if (g->value.type == VAL_NATIVE) {
@@ -809,7 +864,81 @@ static bool find_enum_member(Compiler *c, uint16_t enum_si, const char *name, in
 static void variable(Compiler *c, bool can_assign) {
     Token name = c->prev;
     if (resolve_local(c, &name) < 0) {
-        int k = find_named(c, name.start, name.length);
+        int amod = find_alias(c, name.start, name.length);
+        if (amod >= 0) {
+            consume(c, TOK_DOT, "expected '.' and a member name after a module alias");
+            if (c->panic) return;
+            consume(c, TOK_IDENT, "expected a member name after '.'");
+            if (c->panic) return;
+            Token member = c->prev;
+            char qname[128];
+            int qlen = qualify_name(amod, member.start, member.length, qname, sizeof qname);
+
+            int k = find_named(c, qname, qlen);
+            if (k >= 0) {
+                if (can_assign && (check(c, TOK_EQ) || is_compound(c->cur.type))) {
+                    error_at_current(c, "this is a const, which can't be changed (use let for a variable)");
+                    return;
+                }
+                emit_const(c, int_val(c->vm->prog.named[k].value));
+                return;
+            }
+            int e = find_enum(c, qname, qlen);
+            if (e >= 0) {
+                uint16_t enum_si = c->vm->prog.enum_names[e];
+                consume(c, TOK_DOT, "expected '.' and a member name after an enum name");
+                if (c->panic) return;
+                consume(c, TOK_IDENT, "expected an enum member name after '.'");
+                if (c->panic) return;
+                Token mem = c->prev;
+                int32_t val = 0;
+                if (!find_enum_member(c, enum_si, mem.start, mem.length, &val)) {
+                    errorf(c, "enum '%.*s' has no member '%.*s'", member.length, member.start, mem.length, mem.start);
+                    return;
+                }
+                if (can_assign && (check(c, TOK_EQ) || is_compound(c->cur.type))) {
+                    error_at_current(c, "enum values are constants and can't be changed");
+                    return;
+                }
+                emit_const(c, int_val(val));
+                c->last_enum_end = chunk(c)->count;
+                c->last_enum_si = enum_si;
+                c->last_enum_mem_si = (uint16_t)program_intern(&c->vm->prog, mem.start, (uint32_t)mem.length);
+                return;
+            }
+            int type = find_struct(c, qname, qlen);
+            if (type >= 0 && check(c, TOK_LBRACE)) {
+                struct_literal(c, type);
+                return;
+            }
+            int arg = vm_global_find(c->vm, qname, qlen);
+            if (arg < 0 || !c->vm->globals[arg].declared) {
+                errorf(c, "module '%.*s' has no '%.*s'", name.length, name.start, member.length, member.start);
+                return;
+            }
+            if (can_assign && match(c, TOK_EQ)) {
+                expression(c);
+                emit2(c, OP_SET_GLOBAL, (uint8_t)arg);
+            } else if (can_assign && is_compound(c->cur.type)) {
+                TokenType op = c->cur.type;
+                advance(c);
+                emit2(c, OP_GET_GLOBAL, (uint8_t)arg);
+                expression(c);
+                emit(c, compound_op(op));
+                emit2(c, OP_SET_GLOBAL, (uint8_t)arg);
+            } else {
+                emit2(c, OP_GET_GLOBAL, (uint8_t)arg);
+                c->var_end = chunk(c)->count;
+                c->var_set_op = OP_SET_GLOBAL;
+                c->var_arg = (uint8_t)arg;
+            }
+            return;
+        }
+
+        char qname[128];
+        int qlen = qualify_name(c->current_mod, name.start, name.length, qname, sizeof qname);
+        int k = c->current_mod > 0 ? find_named(c, qname, qlen) : -1;
+        if (k < 0) k = find_named(c, name.start, name.length);
         if (k >= 0) {
             if (can_assign && (check(c, TOK_EQ) || is_compound(c->cur.type))) {
                 error_at_current(c, "this is a const, which can't be changed (use let for a variable)");
@@ -818,7 +947,8 @@ static void variable(Compiler *c, bool can_assign) {
             emit_const(c, int_val(c->vm->prog.named[k].value));
             return;
         }
-        int e = find_enum(c, name.start, name.length);
+        int e = c->current_mod > 0 ? find_enum(c, qname, qlen) : -1;
+        if (e < 0) e = find_enum(c, name.start, name.length);
         if (e >= 0) {
             uint16_t enum_si = c->vm->prog.enum_names[e];
             consume(c, TOK_DOT, "expected '.' and a member name after an enum name");
@@ -841,11 +971,12 @@ static void variable(Compiler *c, bool can_assign) {
             c->last_enum_mem_si = (uint16_t)program_intern(&c->vm->prog, mem.start, (uint32_t)mem.length);
             return;
         }
-    }
-    int type = find_struct(c, name.start, name.length);
-    if (type >= 0 && check(c, TOK_LBRACE)) {
-        struct_literal(c, type);
-        return;
+        int type = c->current_mod > 0 ? find_struct(c, qname, qlen) : -1;
+        if (type < 0) type = find_struct(c, name.start, name.length);
+        if (type >= 0 && check(c, TOK_LBRACE)) {
+            struct_literal(c, type);
+            return;
+        }
     }
     uint8_t get, set;
     int arg = resolve_local(c, &name);
@@ -1506,11 +1637,27 @@ static bool parse_const_int(Compiler *c, int32_t *out, const char *err_msg) {
         }
     } else if (match(c, TOK_IDENT)) {
         Token tok = c->prev;
-        int k = find_named(c, tok.start, tok.length);
+        int amod = find_alias(c, tok.start, tok.length);
+        char qname[128];
+        int qlen;
+        Token target = tok;
+        if (amod >= 0) {
+            consume(c, TOK_DOT, "expected '.' and a member name after a module alias");
+            if (c->panic) return false;
+            consume(c, TOK_IDENT, "expected a const or enum name after '.'");
+            if (c->panic) return false;
+            target = c->prev;
+            qlen = qualify_name(amod, target.start, target.length, qname, sizeof qname);
+        } else {
+            qlen = qualify_name(c->current_mod, tok.start, tok.length, qname, sizeof qname);
+        }
+        int k = find_named(c, qname, qlen);
+        if (k < 0 && amod < 0 && c->current_mod > 0) k = find_named(c, tok.start, tok.length);
         if (k >= 0) {
             v = c->vm->prog.named[k].value;
         } else {
-            int e = find_enum(c, tok.start, tok.length);
+            int e = find_enum(c, qname, qlen);
+            if (e < 0 && amod < 0 && c->current_mod > 0) e = find_enum(c, tok.start, tok.length);
             if (e < 0) {
                 error(c, err_msg);
                 return false;
@@ -1521,7 +1668,7 @@ static bool parse_const_int(Compiler *c, int32_t *out, const char *err_msg) {
             consume(c, TOK_IDENT, "expected an enum member name after '.'");
             if (c->panic) return false;
             if (!find_enum_member(c, enum_si, c->prev.start, c->prev.length, &v)) {
-                errorf(c, "enum '%.*s' has no member '%.*s'", tok.length, tok.start, c->prev.length, c->prev.start);
+                errorf(c, "enum '%.*s' has no member '%.*s'", target.length, target.start, c->prev.length, c->prev.start);
                 return false;
             }
         }
@@ -1540,8 +1687,14 @@ static void const_decl(Compiler *c) {
     if (!at_top_level(c)) error(c, "consts can only be declared at the top level of a file");
     consume(c, TOK_IDENT, "expected a name after 'const', like: const LED = 2");
     Token name = c->prev;
-    if (find_named(c, name.start, name.length) >= 0 || find_struct(c, name.start, name.length) >= 0 ||
-        find_enum(c, name.start, name.length) >= 0) {
+    if (find_alias(c, name.start, name.length) >= 0) {
+        error(c, "this name is already taken");
+        return;
+    }
+    char qname[128];
+    int qlen = qualify_name(c->current_mod, name.start, name.length, qname, sizeof qname);
+    if (find_named(c, qname, qlen) >= 0 || find_struct(c, qname, qlen) >= 0 ||
+        find_enum(c, qname, qlen) >= 0) {
         error(c, "this name is already taken");
         return;
     }
@@ -1553,7 +1706,7 @@ static void const_decl(Compiler *c) {
         p->named_cap = p->named_cap ? p->named_cap * 2 : 64;
         p->named = jl_xrealloc(p->named, (size_t)p->named_cap * sizeof *p->named);
     }
-    p->named[p->named_count].name = (uint16_t)program_intern(p, name.start, (uint32_t)name.length);
+    p->named[p->named_count].name = (uint16_t)program_intern(p, qname, (uint32_t)qlen);
     p->named[p->named_count++].value = v;
 }
 
@@ -1562,18 +1715,24 @@ static void enum_decl(Compiler *c) {
     if (!at_top_level(c)) error(c, "enums can only be declared at the top level of a file");
     consume(c, TOK_IDENT, "expected a name after 'enum', like: enum Mode { BUS, STUDY }");
     Token name = c->prev;
-    if (find_named(c, name.start, name.length) >= 0 || find_struct(c, name.start, name.length) >= 0 ||
-        find_enum(c, name.start, name.length) >= 0) {
+    if (find_alias(c, name.start, name.length) >= 0) {
         error(c, "this name is already taken");
         return;
     }
-    int gi = vm_global_find(c->vm, name.start, name.length);
+    char qname[128];
+    int qlen = qualify_name(c->current_mod, name.start, name.length, qname, sizeof qname);
+    if (find_named(c, qname, qlen) >= 0 || find_struct(c, qname, qlen) >= 0 ||
+        find_enum(c, qname, qlen) >= 0) {
+        error(c, "this name is already taken");
+        return;
+    }
+    int gi = vm_global_find(c->vm, qname, qlen);
     if (gi >= 0 && c->vm->globals[gi].declared) {
         error(c, "this name is already taken");
         return;
     }
     Program *p = &c->vm->prog;
-    int enum_si_i = program_intern(p, name.start, (uint32_t)name.length);
+    int enum_si_i = program_intern(p, qname, (uint32_t)qlen);
     if (enum_si_i < 0 || enum_si_i > 0xFFFF) {
         error(c, "too many names in one program");
         return;
@@ -1703,7 +1862,9 @@ static void fn_decl(Compiler *c) {
     consume(c, TOK_IDENT, "expected a function name after 'fn'");
     Token name = c->prev;
     int g = global_declare(c, name);
-    int fi = compile_function(c, name.start, name.length, true);
+    char qname[128];
+    int qlen = qualify_name(c->current_mod, name.start, name.length, qname, sizeof qname);
+    int fi = compile_function(c, qname, qlen, true);
     if (fi < 0) return;
     emit_const(c, fn_val((uint16_t)fi));
     emit2(c, OP_DEF_GLOBAL, (uint8_t)g);
@@ -1864,7 +2025,7 @@ static bool resolve_use_path(const char *base_path, const char *rel, char *out, 
     return normalize_path(combined, out, size);
 }
 
-/* use "relative/file.jlang": include-once module import with cycle detection. */
+/* use "relative/file.jlang" [as alias]: include-once module import with cycle detection. */
 static void use_decl(Compiler *c) {
     if (!at_top_level(c)) {
         error(c, "'use' can only be written at the top level of a file");
@@ -1878,8 +2039,28 @@ static void use_decl(Compiler *c) {
         error(c, "expected a non-empty file path after 'use'");
         return;
     }
+
+    bool has_alias = false;
+    Token alias_tok;
+    memset(&alias_tok, 0, sizeof alias_tok);
+    if (c->cur.type == TOK_IDENT && c->cur.length == 2 && memcmp(c->cur.start, "as", 2) == 0) {
+        advance(c);
+        consume(c, TOK_IDENT, "expected a module alias after 'as', like: use \"sensor.jlang\" as sensor");
+        if (c->panic) return;
+        alias_tok = c->prev;
+        if (alias_tok.length >= 64) {
+            error(c, "module alias is too long (max 63 characters)");
+            return;
+        }
+        if (find_alias(c, alias_tok.start, alias_tok.length) >= 0) {
+            errorf(c, "module alias '%.*s' is already in use", alias_tok.length, alias_tok.start);
+            return;
+        }
+        has_alias = true;
+    }
+
     if (c->vm->file_reader == NULL) {
-        error(c, "'use' is only available when compiling from files");
+        error(c, "'use' is only available when compiling from files (run `jlang bundle` for browser or device)");
         return;
     }
     char resolved[512];
@@ -1894,7 +2075,21 @@ static void use_decl(Compiler *c) {
         }
     }
     for (int i = 0; i < c->used_count; i++) {
-        if (strcmp(c->used_files[i], resolved) == 0) return; /* include-once */
+        if (strcmp(c->used_files[i], resolved) == 0) {
+            if (has_alias && c->used_mod_ids[i] > 0) {
+                if (c->alias_count >= MAX_MOD_ALIASES) {
+                    error(c, "too many module aliases (max 64)");
+                    return;
+                }
+                ModAlias *a = &c->aliases[c->alias_count++];
+                memcpy(a->alias, alias_tok.start, (size_t)alias_tok.length);
+                a->alias[alias_tok.length] = '\0';
+                a->mod_id = c->used_mod_ids[i];
+                a->owner_mod = c->current_mod;
+                return;
+            }
+            if (!has_alias && c->used_mod_ids[i] == 0) return; /* include-once */
+        }
     }
     if (c->use_depth >= MAX_USE_DEPTH) {
         error(c, "nested 'use' imports are too deep (max 16)");
@@ -1909,9 +2104,11 @@ static void use_decl(Compiler *c) {
         errorf(c, "can't read '%s'", resolved);
         return;
     }
+    int mod_id = has_alias ? c->next_mod_id++ : 0;
     size_t plen = strlen(resolved);
     char *path_copy = jl_xrealloc(NULL, plen + 1);
     memcpy(path_copy, resolved, plen + 1);
+    c->used_mod_ids[c->used_count] = mod_id;
     c->used_files[c->used_count++] = path_copy;
     c->owned_srcs[c->owned_src_count++] = imported_src;
     c->use_stack[c->use_depth++] = path_copy;
@@ -1920,6 +2117,7 @@ static void use_decl(Compiler *c) {
     const char *saved_file = c->file_path;
     const char *saved_base = c->base_path;
     bool saved_in_use = c->in_use;
+    int saved_mod = c->current_mod;
     Lexer saved_lx = c->lx;
     Token saved_cur = c->cur;
     Token saved_prev = c->prev;
@@ -1929,6 +2127,7 @@ static void use_decl(Compiler *c) {
     c->file_path = path_copy;
     c->base_path = path_copy;
     c->in_use = true;
+    c->current_mod = mod_id;
     c->var_end = -1;
     lexer_init(&c->lx, imported_src);
     advance(c);
@@ -1939,11 +2138,24 @@ static void use_decl(Compiler *c) {
     c->file_path = saved_file;
     c->base_path = saved_base;
     c->in_use = saved_in_use;
+    c->current_mod = saved_mod;
     c->lx = saved_lx;
     c->cur = saved_cur;
     c->prev = saved_prev;
     c->var_end = saved_var_end;
     c->panic = false;
+
+    if (has_alias) {
+        if (c->alias_count >= MAX_MOD_ALIASES) {
+            error(c, "too many module aliases (max 64)");
+            return;
+        }
+        ModAlias *a = &c->aliases[c->alias_count++];
+        memcpy(a->alias, alias_tok.start, (size_t)alias_tok.length);
+        a->alias[alias_tok.length] = '\0';
+        a->mod_id = mod_id;
+        a->owner_mod = saved_mod;
+    }
 }
 
 /* struct Reading { temp, time }: a type with named fields. */
@@ -1952,7 +2164,13 @@ static void struct_decl(Compiler *c) {
     consume(c, TOK_IDENT, "expected a name after 'struct', like: struct Reading { temp, time }");
     Token name = c->prev;
     Program *p = &c->vm->prog;
-    if (find_struct(c, name.start, name.length) >= 0 || find_enum(c, name.start, name.length) >= 0) {
+    if (find_alias(c, name.start, name.length) >= 0) {
+        error(c, "there is already a module alias with this name");
+        return;
+    }
+    char qname[128];
+    int qlen = qualify_name(c->current_mod, name.start, name.length, qname, sizeof qname);
+    if (find_struct(c, qname, qlen) >= 0 || find_enum(c, qname, qlen) >= 0) {
         error(c, "there is already a struct with this name");
         return;
     }
@@ -1962,7 +2180,7 @@ static void struct_decl(Compiler *c) {
     }
     StructDef *d = &p->structs[p->struct_count];
     memset(d, 0, sizeof *d);
-    d->name = (uint16_t)program_intern(p, name.start, (uint32_t)name.length);
+    d->name = (uint16_t)program_intern(p, qname, (uint32_t)qlen);
     consume(c, TOK_LBRACE, "expected '{' and then the field names");
     while (!check(c, TOK_RBRACE) && !check(c, TOK_EOF)) {
         consume(c, TOK_IDENT, "expected a field name");
@@ -2073,29 +2291,36 @@ static int edit_distance(const char *a, int n, const char *b, int m) {
     return d[n][m];
 }
 
+static const char *display_sym_name(const char *s) {
+    const char *dollar = strchr(s, '$');
+    return dollar ? dollar + 1 : s;
+}
+
 static void report_undefined(Compiler *c) {
     JlVM *vm = c->vm;
     for (int i = 0; i < vm->global_count; i++) {
         Global *g = &vm->globals[i];
         if (g->declared || g->use_line == 0) continue;
         c->had_error = true;
+        const char *shown = display_sym_name(g->name);
+        int shown_len = (int)strlen(shown);
         if (g->use_file) {
             vm_errf(vm, "error (%s, line %d, col %d): '%s' is not defined",
-                    g->use_file, g->use_line, g->use_col, g->name);
+                    g->use_file, g->use_line, g->use_col, shown);
         } else {
             vm_errf(vm, "error (line %d, col %d): '%s' is not defined",
-                    g->use_line, g->use_col, g->name);
+                    g->use_line, g->use_col, shown);
         }
 
         const char *best = NULL;
         int best_d = 3;
         for (int j = 0; j < vm->global_count; j++) {
             if (!vm->globals[j].declared) continue;
-            int d = edit_distance(g->name, g->len, vm->globals[j].name,
-                                  vm->globals[j].len);
+            const char *cand = display_sym_name(vm->globals[j].name);
+            int d = edit_distance(shown, shown_len, cand, (int)strlen(cand));
             if (d < best_d) {
                 best_d = d;
-                best = vm->globals[j].name;
+                best = cand;
             }
         }
         if (best) vm_errf(vm, " - did you mean '%s'?\n", best);
@@ -2125,12 +2350,14 @@ int jl_compile(JlVM *vm, const char *source) {
     c.vm = vm;
     c.src = source;
     c.var_end = -1;
+    c.next_mod_id = 1;
     char root_norm[512];
     if (vm->source_path != NULL && normalize_path(vm->source_path, root_norm, sizeof root_norm)) {
         size_t rlen = strlen(root_norm);
         char *rcopy = jl_xrealloc(NULL, rlen + 1);
         memcpy(rcopy, root_norm, rlen + 1);
         c.base_path = rcopy;
+        c.used_mod_ids[c.used_count] = 0;
         c.used_files[c.used_count++] = rcopy;
         c.use_stack[c.use_depth++] = rcopy;
     }

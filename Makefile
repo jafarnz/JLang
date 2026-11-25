@@ -36,7 +36,7 @@ sanitize:
 
 # WebAssembly build for the browser playground (needs clang + wasi-libc).
 WASI_SYSROOT ?= /usr
-CORE := $(filter-out src/main.c,$(SRC))
+CORE := $(filter-out src/main.c src/bundle.c,$(SRC))
 
 wasm: build/jlang.wasm
 
@@ -58,7 +58,7 @@ clean:
 
 # Glass, the pocket computer that shows a program running: its desktop
 # simulator. See glass/README.md.
-GLASS_SRC := glass/sim/glass_sim.c glass/core/glass.c $(filter-out src/main.c src/board_sim.c src/fmt.c src/rv_%.c,$(SRC))
+GLASS_SRC := glass/sim/glass_sim.c glass/core/glass.c $(filter-out src/main.c src/board_sim.c src/bundle.c src/fmt.c src/rv_%.c,$(SRC))
 
 build/glass_sim: $(GLASS_SRC) $(HDR) glass/core/glass.h
 	@mkdir -p build

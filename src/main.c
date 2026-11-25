@@ -18,6 +18,7 @@
 #include "port.h"
 
 #include "board_sim.h"
+#include "bundle.h"
 #include "fmt.h"
 #include "jlang.h"
 #include "rv.h"
@@ -71,6 +72,7 @@ static void usage(FILE *f) {
         "  jlang test <file.jlang...>    run built-in test \"name\" { ... } blocks with leak checking\n"
         "  jlang check <file.jlang>      check for errors without running\n"
         "  jlang fmt <file.jlang...>     format source code (-w writes in place, --check checks)\n"
+        "  jlang bundle <file.jlang>     inline all `use` modules into one file (-o out.jlang)\n"
         "  jlang xray <file.jlang>       run, showing every instruction and the stack\n"
         "  jlang dis <file.jlang>        print the compiled bytecode\n"
         "  jlang repl                    interactive prompt\n"
@@ -889,6 +891,29 @@ static int fmt_command(const Options *o) {
     return 0;
 }
 
+static int bundle_command(const Options *o) {
+    char err[320];
+    char *bundled = jl_bundle(o->file, err, (int)sizeof err);
+    if (bundled == NULL) {
+        fprintf(stderr, "jlang bundle: %s\n", err);
+        return EXIT_COMPILE;
+    }
+    if (o->out_path) {
+        FILE *out = fopen(o->out_path, "wb");
+        if (out == NULL) {
+            fprintf(stderr, "jlang: can't write '%s': %s\n", o->out_path, strerror(errno));
+            free(bundled);
+            return EXIT_RUNTIME;
+        }
+        fwrite(bundled, 1, strlen(bundled), out);
+        fclose(out);
+    } else {
+        fputs(bundled, stdout);
+    }
+    free(bundled);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     Options o;
     if (!parse_args(argc, argv, &o)) {
@@ -912,6 +937,7 @@ int main(int argc, char **argv) {
     bool known = strcmp(cmd, "run") == 0 || strcmp(cmd, "xray") == 0 ||
                  strcmp(cmd, "check") == 0 || strcmp(cmd, "dis") == 0 ||
                  strcmp(cmd, "test") == 0 || strcmp(cmd, "fmt") == 0 ||
+                 strcmp(cmd, "bundle") == 0 ||
                  strcmp(cmd, "emu") == 0 || strcmp(cmd, "build") == 0 || strcmp(cmd, "asm") == 0 ||
                  strcmp(cmd, "wcet") == 0 || strcmp(cmd, "svd") == 0;
     if (!known) {
@@ -926,6 +952,7 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "run") == 0) return run_file(&o, false);
     if (strcmp(cmd, "test") == 0) return test_command(&o);
     if (strcmp(cmd, "fmt") == 0) return fmt_command(&o);
+    if (strcmp(cmd, "bundle") == 0) return bundle_command(&o);
     if (strcmp(cmd, "emu") == 0) return native(&o, true);
     if (strcmp(cmd, "svd") == 0) return svd_command(&o);
     if (strcmp(cmd, "wcet") == 0) {

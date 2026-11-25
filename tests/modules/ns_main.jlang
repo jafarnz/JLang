@@ -1,0 +1,11 @@
+use "ns_a.jlang" as a
+use "ns_b.jlang" as b
+
+const SUM_ADDR = a.ADDRESS
+let m = a.Mode.High
+let out = 0
+match m {
+    a.Mode.Low => { out = 1 }
+    a.Mode.High => { out = b.Mode.High }
+}
+print(SUM_ADDR, b.ADDRESS, a.bump(2), b.bump(3), out)

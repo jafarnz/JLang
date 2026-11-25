@@ -1,0 +1,5 @@
+// Regression: boolean arrays must print true/false on the VM and be rejected
+// at compile time in native mode rather than silently printing 1 0.
+let flags = [true, false]
+print(flags[0], flags[1])
+// expect: true false

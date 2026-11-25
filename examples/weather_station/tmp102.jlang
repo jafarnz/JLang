@@ -1,0 +1,34 @@
+// tmp102.jlang - TMP102 I2C temperature sensor driver.
+// Declares its own ADDRESS, Status enum, state, and init() in its module namespace.
+
+const ADDRESS = 0x48
+const REG_TEMP = 0x00
+
+enum Status { Cool, Warm, Hot }
+
+let ready = false
+
+fn init() {
+    ready = true
+}
+
+fn read_raw() {
+    return i2c_read16(ADDRESS, REG_TEMP) >> 4
+}
+
+fn read_c() {
+    if !ready {
+        init()
+    }
+    return read_raw() / 16
+}
+
+fn classify(temp_c) {
+    if temp_c >= 30 {
+        return Status.Hot
+    }
+    if temp_c >= 22 {
+        return Status.Warm
+    }
+    return Status.Cool
+}

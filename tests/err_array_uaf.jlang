@@ -1,0 +1,8 @@
+// exit: 70
+// Regression: freeing an array and reading it is a use-after-free on the VM
+// and must be rejected at compile time in native mode rather than succeeding.
+let a = [1, 2]
+free(a)
+print(a[0])
+// expect: runtime error (line 6): use after free: this array was freed at line 5 (it was allocated at line 4)
+// expect:   in top-level code, line 6

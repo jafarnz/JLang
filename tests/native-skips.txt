@@ -2,11 +2,13 @@
 # exactly these, and only when the native compile error contains the reason
 # given here; any other native compile error is a failure. Format:
 # path<TAB>part of the error message
-tests/arrays.jlang	printing whole arrays isn't available in native code
+tests/arrays.jlang	in native code, static arrays only hold ints (or
 tests/board.jlang	capture() isn't available in native code yet (na
+tests/bool_array.jlang	in native code, static arrays only hold ints (or
 tests/compact.jlang	alloc() isn't available in native code yet (nati
 tests/defer_mem.jlang	alloc() isn't available in native code yet (nati
 tests/easy_hardware.jlang	turn_on() isn't available in native code yet; ru
+tests/err_array_uaf.jlang	free() isn't available in native code yet (nativ
 tests/err_bounds.jlang	alloc() isn't available in native code yet (nati
 tests/err_byte.jlang	alloc() isn't available in native code yet (nati
 tests/err_double_free.jlang	alloc() isn't available in native code yet (nati

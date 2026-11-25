@@ -1,0 +1,8 @@
+const ADDRESS = 0x48
+enum Mode { Low, High }
+let count = 0
+
+fn bump(x) {
+    count += x
+    return count + ADDRESS
+}
