@@ -111,7 +111,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Build the WebAssembly package
         run: |
+          sudo apt-get update
           sudo apt-get install -y clang lld wasi-libc
+          CLANG_VER=$(clang -dumpversion | cut -d. -f1)
+          sudo apt-get install -y "libclang-rt-${CLANG_VER}-dev-wasm32"
           make wasm WASI_SYSROOT=/usr
           ./packaging/npm/build.sh "${GITHUB_REF_NAME#v}"
       - name: Publish
