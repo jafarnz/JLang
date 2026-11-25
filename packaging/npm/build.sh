@@ -2,7 +2,7 @@
 # Assembles the npm package in build/npm from the WebAssembly build:
 #   make wasm && packaging/npm/build.sh 0.2.0
 set -eu
-VERSION="${1:-0.1.1}"
+VERSION="${1:-0.1.2}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$ROOT/build/npm"
 rm -rf "$OUT"
