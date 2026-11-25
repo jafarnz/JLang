@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "driver/gpio.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
 #include "esp_http_client.h"
@@ -22,6 +23,7 @@
 #include "freertos/task.h"
 #include "hardware.h"
 #include "jlang.h"
+#include "sdkconfig.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -59,6 +61,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
 
 static bool wifi_ensure_init(void) {
     if (wifi_inited) return true;
+#if CONFIG_IDF_TARGET_ESP32C6
+    /* XIAO ESP32-C6 RF switch: GPIO 3 LOW enables switch, GPIO 14 LOW picks ceramic antenna. */
+    gpio_reset_pin(3);
+    gpio_set_direction(3, GPIO_MODE_OUTPUT);
+    gpio_set_level(3, 0);
+    gpio_reset_pin(14);
+    gpio_set_direction(14, GPIO_MODE_OUTPUT);
+    gpio_set_level(14, 0);
+    vTaskDelay(pdMS_TO_TICKS(50));
+#endif
     esp_err_t err = esp_netif_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
     err = esp_event_loop_create_default();

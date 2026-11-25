@@ -515,9 +515,10 @@ void app_main(void) {
     for (;;) {
         if (pending) {
             char *src = pending;
-            if (pending_save) save_program(src);
-            run_program(src);
+            bool do_save = pending_save;
             pending = NULL;
+            if (do_save) save_program(src);
+            run_program(src);
             free(src);
         }
         if (stop_now) {
