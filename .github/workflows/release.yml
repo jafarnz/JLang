@@ -59,8 +59,28 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/jlang-*.*
 
-  release:
+  verify-packages:
     needs: build
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: linux-x86_64 }
+          - { os: macos-latest, target: macos-arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist
+      - name: Verify packaged archive before publishing
+        shell: bash
+        run: |
+          tar xzf "dist/jlang-${{ matrix.target }}.tar.gz" -C dist
+          bash tests/verify-package.sh "dist/jlang-${{ matrix.target }}/jlang" "${GITHUB_REF_NAME#v}"
+
+  release:
+    needs: [build, verify-packages]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -73,6 +93,32 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+  verify-download:
+    needs: release
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: linux-x86_64 }
+          - { os: macos-latest, target: macos-arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download published release, verify checksum, and test binary
+        shell: bash
+        run: |
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          archive="jlang-${{ matrix.target }}.tar.gz"
+          mkdir -p /tmp/jlang-dl
+          curl --retry 5 --retry-delay 3 --retry-all-errors -fsSL "$base/SHA256SUMS" -o /tmp/jlang-dl/SHA256SUMS
+          curl --retry 5 --retry-delay 3 --retry-all-errors -fsSL "$base/$archive" -o "/tmp/jlang-dl/$archive"
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd /tmp/jlang-dl && grep " $archive\$" SHA256SUMS | sha256sum -c -)
+          else
+            (cd /tmp/jlang-dl && grep " $archive\$" SHA256SUMS | shasum -a 256 -c -)
+          fi
+          tar xzf "/tmp/jlang-dl/$archive" -C /tmp/jlang-dl
+          bash tests/verify-package.sh "/tmp/jlang-dl/jlang-${{ matrix.target }}/jlang" "${GITHUB_REF_NAME#v}"
 
   # Updates the Homebrew tap (github.com/jafarnz/homebrew-tap) when the
   # HOMEBREW_TAP_TOKEN secret, a token that can push to it, is set.

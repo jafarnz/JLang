@@ -12,7 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define JL_VERSION "0.1.0"
+#define JL_VERSION "0.1.1"
 
 /* How many values the VM stack can hold (each value is 8 bytes). */
 #ifndef JL_STACK_MAX
