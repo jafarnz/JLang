@@ -1264,9 +1264,6 @@ static void for_stmt(Compiler *c) {
     begin_scope(c);
     int from_at = chunk(c)->count;
     expression(c);
-    declare_local(c, var);
-    mark_initialized(c);
-    int i_slot = c->fs->local_count - 1;
     int32_t from, to;
     bool known = const_int_at(c, from_at, &from);
 
@@ -1274,6 +1271,10 @@ static void for_stmt(Compiler *c) {
     int to_at = chunk(c)->count;
     expression(c);
     known = known && const_int_at(c, to_at, &to);
+
+    declare_local(c, var);
+    mark_initialized(c);
+    int i_slot = c->fs->local_count - 1;
     Token end_name = {TOK_IDENT, "(end)", 5, var.line, var.col};
     declare_local(c, end_name);
     mark_initialized(c);

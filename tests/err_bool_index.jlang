@@ -1,0 +1,7 @@
+// exit: 70
+// Regression: indexing a boolean fails at runtime on the VM and must be
+// rejected at compile time in native mode rather than treating true as 1.
+let b = true
+print(b[0])
+// expect: runtime error (line 5): can't index a bool (you can index a buf, a str, or the bits of an int)
+// expect:   in top-level code, line 5

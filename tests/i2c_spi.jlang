@@ -7,7 +7,7 @@ for i in 0..len(found) {
 free(found)
 
 let TMP102 = 0x48
-let raw = i2c_read16(TMP102, 0x00)
+let raw = i16(i2c_read16(TMP102, 0x00))
 let celsius = (raw >> 4) / 16
 print("temperature:", celsius, "C")
 

@@ -9,6 +9,8 @@ tests/compact.jlang	alloc() isn't available in native code yet (nati
 tests/defer_mem.jlang	alloc() isn't available in native code yet (nati
 tests/easy_hardware.jlang	turn_on() isn't available in native code yet; ru
 tests/err_array_uaf.jlang	free() isn't available in native code yet (nativ
+tests/err_bool_index.jlang	can't index a bool
+tests/err_bool_slice.jlang	bit ranges like x[7..4] only work on ints, got bool
 tests/err_bounds.jlang	alloc() isn't available in native code yet (nati
 tests/err_byte.jlang	alloc() isn't available in native code yet (nati
 tests/err_double_free.jlang	alloc() isn't available in native code yet (nati

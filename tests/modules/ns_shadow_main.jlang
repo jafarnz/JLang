@@ -1,0 +1,8 @@
+use "ns_shadow.jlang" as m
+
+m.if_shadow()
+m.else_shadow()
+m.nested_shadow()
+m.for_shadow()
+m.param_shadow(42)
+print(m.x)

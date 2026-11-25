@@ -382,12 +382,20 @@ static void bundle_file(Bundler *b, const char *norm_path, int mod_id) {
        namespaced references and declarations. */
     const char *cursor = src;
     brace = 0;
-    SymName locals[B_MAX_LOCALS];
+    typedef struct {
+        char name[64];
+        int depth;
+    } LocalEntry;
+
+    LocalEntry locals[B_MAX_LOCALS];
     int local_count = 0;
     bool in_fn_header = false;
     bool in_params = false;
     bool skip_test = false;
     int test_brace_start = 0;
+    bool has_pending_for = false;
+    char pending_for_name[64];
+    int pending_for_len = 0;
 
     for (int i = 0; i < ntoks && toks[i].type != TOK_EOF; i++) {
         Token *tk = &toks[i];
@@ -429,7 +437,9 @@ static void bundle_file(Bundler *b, const char *norm_path, int mod_id) {
             continue;
         }
 
-        /* Track function parameters & locals so local shadowing isn't mangled. */
+        /* Track function parameters, block-scoped `let` locals, and `for` loop
+           variables with exact brace depths so shadowing ends cleanly at `}`. */
+        bool is_for_var_decl = (i > 0 && toks[i - 1].type == TOK_FOR && tk->type == TOK_IDENT);
         if (brace == 0 && tk->type == TOK_FN) {
             local_count = 0;
             in_fn_header = true;
@@ -440,21 +450,59 @@ static void bundle_file(Bundler *b, const char *norm_path, int mod_id) {
         } else if (in_fn_header && tk->type == TOK_LBRACE) {
             in_fn_header = false;
         } else if (in_params && tk->type == TOK_IDENT) {
-            add_sym(locals, &local_count, B_MAX_LOCALS, tk->start, tk->length);
-        } else if (brace > 0 && (tk->type == TOK_LET || tk->type == TOK_FOR) &&
-                   i + 1 < ntoks && toks[i + 1].type == TOK_IDENT) {
-            add_sym(locals, &local_count, B_MAX_LOCALS, toks[i + 1].start, toks[i + 1].length);
+            if (local_count < B_MAX_LOCALS && tk->length > 0 && tk->length < 64) {
+                memcpy(locals[local_count].name, tk->start, (size_t)tk->length);
+                locals[local_count].name[tk->length] = '\0';
+                locals[local_count].depth = 1;
+                local_count++;
+            }
+        } else if (brace > 0 && tk->type == TOK_LET && i + 1 < ntoks && toks[i + 1].type == TOK_IDENT) {
+            Token *nt = &toks[i + 1];
+            if (local_count < B_MAX_LOCALS && nt->length > 0 && nt->length < 64) {
+                memcpy(locals[local_count].name, nt->start, (size_t)nt->length);
+                locals[local_count].name[nt->length] = '\0';
+                locals[local_count].depth = brace;
+                local_count++;
+            }
+        } else if (tk->type == TOK_FOR && i + 1 < ntoks && toks[i + 1].type == TOK_IDENT) {
+            Token *nt = &toks[i + 1];
+            if (nt->length > 0 && nt->length < 64) {
+                memcpy(pending_for_name, nt->start, (size_t)nt->length);
+                pending_for_name[nt->length] = '\0';
+                pending_for_len = nt->length;
+                has_pending_for = true;
+            }
         }
 
-        if (tk->type == TOK_LBRACE) brace++;
-        else if (tk->type == TOK_RBRACE) {
+        if (tk->type == TOK_LBRACE) {
+            brace++;
+            if (has_pending_for) {
+                if (local_count < B_MAX_LOCALS) {
+                    memcpy(locals[local_count].name, pending_for_name, (size_t)pending_for_len + 1);
+                    locals[local_count].depth = brace;
+                    local_count++;
+                }
+                has_pending_for = false;
+            }
+        } else if (tk->type == TOK_RBRACE) {
             if (brace > 0) brace--;
-            if (brace == 0) local_count = 0;
+            while (local_count > 0 && locals[local_count - 1].depth > brace) {
+                local_count--;
+            }
         }
 
         bool prev_is_dot = (i > 0 && toks[i - 1].type == TOK_DOT);
         bool next_is_colon = (i + 1 < ntoks && toks[i + 1].type == TOK_COLON);
-        bool is_local = (brace > 0 || in_params) && has_sym(locals, local_count, tk->start, tk->length);
+        bool is_local = is_for_var_decl;
+        if (!is_local && (brace > 0 || in_params)) {
+            for (int li = local_count - 1; li >= 0; li--) {
+                if ((int)strlen(locals[li].name) == tk->length &&
+                    memcmp(locals[li].name, tk->start, (size_t)tk->length) == 0) {
+                    is_local = true;
+                    break;
+                }
+            }
+        }
 
         /* Rewrite `alias.member` -> `m<target>__member`. */
         if (tk->type == TOK_IDENT && !prev_is_dot && !is_local &&

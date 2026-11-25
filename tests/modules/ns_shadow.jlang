@@ -1,0 +1,52 @@
+// Module with block-scoped locals, loop vars, and params that temporarily shadow a module variable.
+let x = 7
+
+fn if_shadow() {
+    if true {
+        let x = 3
+        print(x)
+    }
+    print(x)
+}
+
+fn else_shadow() {
+    if false {
+        let x = 99
+        print(x)
+    } else {
+        let x = 4
+        print(x)
+    }
+    print(x)
+}
+
+fn nested_shadow() {
+    let x = 10
+    if true {
+        let x = 2
+        print(x)
+    }
+    print(x)
+}
+
+fn for_shadow() {
+    let total = 0
+    for x in 0..x {
+        total = total + x
+    }
+    print(total, x)
+}
+
+fn param_shadow(x) {
+    if true {
+        let x = 9
+        print(x)
+    }
+    print(x)
+}
+
+if true {
+    let x = 1
+    print(x)
+}
+print(x)

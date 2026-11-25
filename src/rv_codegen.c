@@ -237,6 +237,22 @@ static Kind top(Gen *g, int n) {
     return g->kinds[g->depth - 1 - n];
 }
 
+static bool require_int_arg(Gen *g, const char *name, int argc, int idx) {
+    Kind k = top(g, argc - 1 - idx);
+    if (k.kind != K_INT) {
+        error(g, "%s(): argument %d must be an int, got %s", name, idx + 1, kind_name(k));
+        return false;
+    }
+    return true;
+}
+
+static bool require_int_args(Gen *g, const char *name, int argc) {
+    for (int i = 0; i < argc; i++) {
+        if (!require_int_arg(g, name, argc, i)) return false;
+    }
+    return true;
+}
+
 static void pop_kinds(Gen *g, int n) {
     for (int i = 0; i < n && g->depth > 0; i++) {
         g->depth--;
@@ -661,6 +677,7 @@ static void gen_native_call(Gen *g, int native, int argc) {
         gen_printf(g, argc);
         nil_result = true;
     } else if (strcmp(name, "pin_mode") == 0) {
+        if (!require_int_arg(g, name, argc, 0)) return;
         if (!literal_arg(g, argc, 1, name, &s, &n)) return;
         int mode = n == 3 && memcmp(s, "out", 3) == 0 ? 1
                  : n == 2 && memcmp(s, "in", 2) == 0 ? 0
@@ -674,6 +691,11 @@ static void gen_native_call(Gen *g, int native, int argc) {
         out(g, "    li a1, %d\n    call jl_hal_pin_mode\n", mode);
         nil_result = true;
     } else if (strcmp(name, "pin_write") == 0) {
+        if (!require_int_arg(g, name, argc, 0)) return;
+        if (top(g, 0).kind != K_INT && top(g, 0).kind != K_BOOL) {
+            error(g, "pin_write(): a pin can only be 0 (LOW) or 1 (HIGH)");
+            return;
+        }
         out(g, "    lw a0, %d(s1)\n", arg_off(argc, 0));
         check_pin(g);
         out(g, "    lw a1, %d(s1)\n", arg_off(argc, 1));
@@ -681,11 +703,13 @@ static void gen_native_call(Gen *g, int native, int argc) {
         out(g, "    call jl_hal_pin_write\n");
         nil_result = true;
     } else if (strcmp(name, "pin_read") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         out(g, "    lw a0, %d(s1)\n", arg_off(argc, 0));
         check_pin(g);
         out(g, "    call jl_hal_pin_read\n");
         result_in_a0 = true;
     } else if (strcmp(name, "delay") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         out(g, "    lw a0, %d(s1)\n", arg_off(argc, 0));
         trap_unless(g, "bgez a0", "delay(): can't wait a negative time");
         out(g, "    call jl_hal_delay\n");
@@ -694,6 +718,7 @@ static void gen_native_call(Gen *g, int native, int argc) {
         out(g, "    call jl_hal_millis\n");
         result_in_a0 = true;
     } else if (strcmp(name, "led") == 0) {
+        if (!require_int_arg(g, name, argc, 0) || !require_int_arg(g, name, argc, 1)) return;
         Kind ck = top(g, 0);
         if (ck.kind == K_STR) {
             /* a colour name is looked up now, so the chip only sees a number */
@@ -706,6 +731,7 @@ static void gen_native_call(Gen *g, int native, int argc) {
             }
             out(g, "    li a2, %u\n", (unsigned)rgb);
         } else {
+            if (!require_int_arg(g, name, argc, 2)) return;
             out(g, "    lw a2, %d(s1)\n", arg_off(argc, 2));
             out(g, "    li t0, 0x1000000\n");
             trap_unless(g, "bltu a2, t0", "led(): a colour is 0xRRGGBB, from 0x000000 to 0xFFFFFF");
@@ -713,6 +739,7 @@ static void gen_native_call(Gen *g, int native, int argc) {
         out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n    call jl_hal_led_set\n", arg_off(argc, 0), arg_off(argc, 1));
         nil_result = true;
     } else if (strcmp(name, "rgb") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         static const char *part[3] = {"red", "green", "blue"};
         out(g, "    li a0, 0\n");
         for (int i = 0; i < 3; i++) {
@@ -731,22 +758,26 @@ static void gen_native_call(Gen *g, int native, int argc) {
         result_in_a0 = true;
     } else if (strcmp(name, "u8") == 0 || strcmp(name, "i8") == 0 || strcmp(name, "u16") == 0 ||
                strcmp(name, "i16") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         int bits = name[1] == '8' ? 24 : 16;
         out(g, "    lw a0, %d(s1)\n    slli a0, a0, %d\n    %s a0, a0, %d\n", arg_off(argc, 0), bits,
             name[0] == 'u' ? "srli" : "srai", bits);
         result_in_a0 = true;
     } else if (strcmp(name, "abs") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         int notmin = new_label(g), done = new_label(g);
         out(g, "    lw a0, %d(s1)\n    li t0, -2147483648\n    bne a0, t0, .Lok%d\n    li a0, 2147483647\n    j .Lok%d\n"
                ".Lok%d:\n    bgez a0, .Lok%d\n    neg a0, a0\n.Lok%d:\n",
             arg_off(argc, 0), notmin, done, notmin, done, done);
         result_in_a0 = true;
     } else if (strcmp(name, "min") == 0 || strcmp(name, "max") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         int done = new_label(g);
         out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n    %s, .Lok%d\n    mv a0, a1\n.Lok%d:\n",
             arg_off(argc, 0), arg_off(argc, 1), name[1] == 'i' ? "bge a1, a0" : "bge a0, a1", done, done);
         result_in_a0 = true;
     } else if (strcmp(name, "clamp") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         int oklo = new_label(g), okhi = new_label(g);
         out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n    lw a2, %d(s1)\n",
             arg_off(argc, 0), arg_off(argc, 1), arg_off(argc, 2));
@@ -755,6 +786,7 @@ static void gen_native_call(Gen *g, int native, int argc) {
             oklo, oklo, okhi, okhi);
         result_in_a0 = true;
     } else if (strcmp(name, "sat_add") == 0 || strcmp(name, "sat_sub") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         int done = new_label(g);
         out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n", arg_off(argc, 0), arg_off(argc, 1));
         if (name[4] == 'a') {
@@ -767,12 +799,14 @@ static void gen_native_call(Gen *g, int native, int argc) {
             done, done, done);
         result_in_a0 = true;
     } else if (strcmp(name, "fix_mul") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n    lw a2, %d(s1)\n",
             arg_off(argc, 0), arg_off(argc, 1), arg_off(argc, 2));
         trap_num_unless(g, "sltiu t0, a2, 32\n    bnez t0", "fix_mul(): fractional bits must be 0..31, got ", "a2", "");
         out(g, "    call jl_rt_fix_mul\n");
         result_in_a0 = true;
     } else if (strcmp(name, "fix_div") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         out(g, "    lw a0, %d(s1)\n    lw a1, %d(s1)\n    lw a2, %d(s1)\n",
             arg_off(argc, 0), arg_off(argc, 1), arg_off(argc, 2));
         trap_num_unless(g, "sltiu t0, a2, 32\n    bnez t0", "fix_div(): fractional bits must be 0..31, got ", "a2", "");
@@ -796,9 +830,11 @@ static void gen_native_call(Gen *g, int native, int argc) {
         out(g, "    rdinstret a0\n");
         result_in_a0 = true;
     } else if (strcmp(name, "mmio_read32") == 0 || strcmp(name, "mmio_read8") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         out(g, "    lw t0, %d(s1)\n    %s a0, 0(t0)\n", arg_off(argc, 0), name[9] == '3' ? "lw" : "lbu");
         result_in_a0 = true;
     } else if (strcmp(name, "mmio_write32") == 0 || strcmp(name, "mmio_write8") == 0) {
+        if (!require_int_args(g, name, argc)) return;
         out(g, "    lw t0, %d(s1)\n    lw t1, %d(s1)\n    %s t1, 0(t0)\n", arg_off(argc, 0), arg_off(argc, 1),
             name[10] == '3' ? "sw" : "sb");
         nil_result = true;
@@ -1668,6 +1704,14 @@ static void gen_function(Gen *g, int fi) {
                 vpush_reg(g, dst, arr_k.index == 1 ? kind_of(K_ARR) : kind_of(K_INT));
                 break;
             }
+            if (top(g, 1).kind != K_INT) {
+                error(g, "can't index a %s", kind_name(top(g, 1)));
+                break;
+            }
+            if (top(g, 0).kind != K_INT) {
+                error(g, "a bit number must be an int, got %s", kind_name(top(g, 0)));
+                break;
+            }
             if (g->vstack[g->depth - 1].loc == V_IMM && g->vstack[g->depth - 1].imm >= 0 && g->vstack[g->depth - 1].imm < 32) {
                 int32_t bit = g->vstack[g->depth - 1].imm;
                 pop_kinds(g, 1);
@@ -1717,6 +1761,18 @@ static void gen_function(Gen *g, int fi) {
                 sync_promo_top(g);
                 break;
             }
+            if (top(g, 2).kind != K_INT) {
+                error(g, "can't set a bit of a %s", kind_name(top(g, 2)));
+                break;
+            }
+            if (top(g, 1).kind != K_INT) {
+                error(g, "a bit number must be an int, got %s", kind_name(top(g, 1)));
+                break;
+            }
+            if (top(g, 0).kind != K_INT && top(g, 0).kind != K_BOOL) {
+                error(g, "a bit can only be set to 0 or 1");
+                break;
+            }
             spill_all(g);
             out(g, "    lw t0, -12(s1)\n    lw t1, -8(s1)\n    lw t3, -4(s1)\n");
             trap_num_unless(g, "sltiu t2, t1, 32\n    bnez t2", "bit ", "t1", " doesn't exist: an int has bits 0..31");
@@ -1753,6 +1809,14 @@ static void gen_function(Gen *g, int fi) {
             error(g, "can't change a bit of a temporary value; store it in a variable first");
             break;
         case OP_SLICE_GET:
+            if (top(g, 2).kind != K_INT) {
+                error(g, "bit ranges like x[7..4] only work on ints, got %s", kind_name(top(g, 2)));
+                break;
+            }
+            if (top(g, 1).kind != K_INT || top(g, 0).kind != K_INT) {
+                error(g, "bit range limits must be ints");
+                break;
+            }
             spill_all(g);
             out(g, "    lw a0, -12(s1)\n    lw a1, -8(s1)\n    lw a2, -4(s1)\n    li a3, %d\n    call jl_rt_slice_get\n", g->line);
             out(g, "    sw a0, -12(s1)\n    addi s1, s1, -8\n");
@@ -1761,6 +1825,18 @@ static void gen_function(Gen *g, int fi) {
             sync_promo_top(g);
             break;
         case OP_SLICE_UPDATE:
+            if (top(g, 3).kind != K_INT) {
+                error(g, "bit ranges like x[7..4] only work on ints, got %s", kind_name(top(g, 3)));
+                break;
+            }
+            if (top(g, 2).kind != K_INT || top(g, 1).kind != K_INT) {
+                error(g, "bit range limits must be ints");
+                break;
+            }
+            if (top(g, 0).kind != K_INT) {
+                error(g, "bits can only be set to an int, got %s", kind_name(top(g, 0)));
+                break;
+            }
             spill_all(g);
             out(g, "    lw a0, -16(s1)\n    lw a1, -12(s1)\n    lw a2, -8(s1)\n    lw a3, -4(s1)\n    li a4, %d\n    call jl_rt_slice_set\n", g->line);
             out(g, "    sw a0, -16(s1)\n    addi s1, s1, -12\n");

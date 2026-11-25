@@ -131,12 +131,32 @@ if [[ "$out" == "72 60 74 163 20" ]]; then pass=$((pass + 1)); else fail=$((fail
 out="$("$BIN" emu "$TMP/ns_bundled.jlang" 2>&1)"
 if [[ "$out" == "72 60 74 163 20" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: bundled ns_main emu ($out)"; fi
 
+shadow_expected=$'1\n7\n3\n7\n4\n7\n2\n10\n21 7\n9\n42\n7'
+out="$("$BIN" run "$DIR/tests/modules/ns_shadow_main.jlang" 2>&1)"
+if [[ "$out" == "$shadow_expected" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: ns_shadow_main run ($out)"; fi
+
+out="$("$BIN" emu "$DIR/tests/modules/ns_shadow_main.jlang" 2>&1)"
+if [[ "$out" == "$shadow_expected" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: ns_shadow_main emu ($out)"; fi
+
+"$BIN" bundle "$DIR/tests/modules/ns_shadow_main.jlang" -o "$TMP/ns_shadow_bundled.jlang" 2>&1
+out="$("$BIN" run "$TMP/ns_shadow_bundled.jlang" 2>&1)"
+if [[ "$out" == "$shadow_expected" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: bundled ns_shadow_main run ($out)"; fi
+
+out="$("$BIN" emu "$TMP/ns_shadow_bundled.jlang" 2>&1)"
+if [[ "$out" == "$shadow_expected" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: bundled ns_shadow_main emu ($out)"; fi
+
 out="$("$BIN" run "$DIR/examples/weather_station/main.jlang" --temperature 29 2>&1)"
 if [[ "$out" == *"sensor=0x48 display=0x3C temp=29C frames=1"* ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: weather_station run ($out)"; fi
 
 "$BIN" bundle "$DIR/examples/weather_station/main.jlang" -o "$TMP/weather_bundled.jlang" 2>&1
 out="$("$BIN" run "$TMP/weather_bundled.jlang" --temperature 29 2>&1)"
 if [[ "$out" == *"sensor=0x48 display=0x3C temp=29C frames=1"* ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: weather_station bundled run ($out)"; fi
+
+out="$("$BIN" run "$DIR/examples/weather_station/main.jlang" --temperature -5 2>&1)"
+if [[ "$out" == *"sensor=0x48 display=0x3C temp=-5C frames=1"* ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: weather_station negative temp run ($out)"; fi
+
+out="$("$BIN" run "$TMP/weather_bundled.jlang" --temperature -5 2>&1)"
+if [[ "$out" == *"sensor=0x48 display=0x3C temp=-5C frames=1"* ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: weather_station negative temp bundled run ($out)"; fi
 
 echo "files: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

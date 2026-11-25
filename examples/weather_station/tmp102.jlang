@@ -13,7 +13,7 @@ fn init() {
 }
 
 fn read_raw() {
-    return i2c_read16(ADDRESS, REG_TEMP) >> 4
+    return i16(i2c_read16(ADDRESS, REG_TEMP)) >> 4
 }
 
 fn read_c() {

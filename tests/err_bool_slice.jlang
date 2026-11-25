@@ -1,0 +1,7 @@
+// exit: 70
+// Regression: bit-slicing a boolean fails at runtime on the VM and must be
+// rejected at compile time in native mode rather than treating true as 1.
+let b = true
+print(b[0..0])
+// expect: runtime error (line 5): bit ranges like x[7..4] only work on ints, got bool
+// expect:   in top-level code, line 5
