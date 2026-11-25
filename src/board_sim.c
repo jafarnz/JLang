@@ -36,6 +36,7 @@ static struct {
     int photos;
     int last_pressed[SIM_PINS]; /* pressed(): the level at the previous call, 0 = unknown */
     Panel panel;
+    Oled oled;
     uint32_t led_xy;
     char kv_keys[SIM_KV_MAX][SIM_KV_KEY_MAX];
     char kv_vals[SIM_KV_MAX][SIM_KV_VAL_MAX];
@@ -661,6 +662,40 @@ static bool sim_i2c_write(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* i2c_write_buf(addr, prefix, buf, off, count): bulk transfer from a buf or str. */
+static bool sim_i2c_write_buf(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc; (void)out;
+    int32_t addr, prefix, off, count;
+    uint8_t *bytes = NULL;
+    uint32_t len = 0;
+    if (!get_i2c_addr(vm, "i2c_write_buf", args[0], &addr) ||
+        !get_byte(vm, "i2c_write_buf", 2, args[1], &prefix) ||
+        !jl_get_bytes(vm, "i2c_write_buf", args[2], &bytes, &len) ||
+        !jl_get_int(vm, "i2c_write_buf", 4, args[3], &off) ||
+        !jl_get_int(vm, "i2c_write_buf", 5, args[4], &count)) return false;
+    if (off < 0 || count < 1 || count > 256 || (uint32_t)off + (uint32_t)count > len) {
+        return jl_error(vm, "i2c_write_buf(): slice off=%d count=%d is out of bounds (buffer has %u bytes, max count 256)",
+                        (int)off, (int)count, (unsigned)len);
+    }
+    bus_setup();
+    bus.ptr[addr] = (uint8_t)prefix;
+    if (addr == 0x68) {
+        for (int32_t i = 0; i < count; i++) bus.mpu[(prefix + i) & 0x7F] = bytes[off + i];
+    }
+    SIM_LOG("i2c 0x%02X write_buf 0x%02X (%d bytes)\n", (unsigned)addr, (unsigned)prefix, (int)count);
+    return true;
+}
+
+static void sim_oled_write(void *ud, const char *data, size_t len) {
+    jl_outf((JlVM *)ud, "%.*s", (int)len, data);
+}
+
+static bool sim_oled_show_hook(JlVM *vm, Oled *o, void *ud) {
+    (void)ud;
+    oled_show(o, sim.now_ms, sim_oled_write, vm);
+    return true;
+}
+
 /* i2c_read(addr, reg): one byte from a register. */
 static bool sim_i2c_read(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
@@ -948,6 +983,10 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     sim.panel.ansi = o->ansi_frames;
     sim.panel.sink = o->frame_sink;
     sim.panel.sink_data = o->frame_data;
+    oled_init(&sim.oled);
+    sim.oled.print = o->print_frames;
+    sim.oled.sink = o->oled_sink;
+    sim.oled.sink_data = o->oled_data;
     jl_set_clock(vm, sim_clock, NULL);
     jl_register_native(vm, "pin_mode", sim_pin_mode, 2);
     jl_register_native(vm, "pin_write", sim_pin_write, 2);
@@ -987,8 +1026,10 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     jl_register_native(vm, "led_height", sim_led_height, 0);
     jl_register_native(vm, "led_size", sim_led_size, 0);
     jl_register_native(vm, "led_text", sim_led_text, 4);
+    oled_register_natives(vm, &sim.oled, sim_oled_show_hook, NULL);
     jl_register_native(vm, "i2c_scan", sim_i2c_scan, 0);
     jl_register_native(vm, "i2c_write", sim_i2c_write, -1);
+    jl_register_native(vm, "i2c_write_buf", sim_i2c_write_buf, 5);
     jl_register_native(vm, "i2c_read", sim_i2c_read, 2);
     jl_register_native(vm, "i2c_read16", sim_i2c_read16, 2);
     jl_register_native(vm, "spi_write", sim_spi_write, -1);

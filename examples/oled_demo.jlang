@@ -1,0 +1,66 @@
+// oled_demo.jlang - 128x64 OLED dashboard with thermometer sprite, live sensor reading, and bar meter.
+// Drag the Thermometer slider (even below 0 C!) and watch the OLED update live.
+
+const TMP102 = 0x48
+const REG_TEMP = 0x00
+
+// 16x16 thermometer icon (packed 1-bit MSB-first, 2 bytes per row)
+let thermo_icon = [
+    0x03, 0xC0,
+    0x06, 0x60,
+    0x04, 0x20,
+    0x04, 0x20,
+    0x05, 0xA0,
+    0x05, 0xA0,
+    0x05, 0xA0,
+    0x05, 0xA0,
+    0x0D, 0xB0,
+    0x1B, 0xD8,
+    0x17, 0xE8,
+    0x17, 0xE8,
+    0x1B, 0xD8,
+    0x0F, 0xF0,
+    0x07, 0xE0,
+    0x00, 0x00,
+]
+
+let raw = i16(i2c_read16(TMP102, REG_TEMP))
+let temp_c = (raw >> 4) / 16
+let label = fmt("{}C", temp_c)
+
+oled_clear()
+
+// Top status bar
+oled_rect(0, 0, 128, 13, true)
+oled_text("JLANG OLED 128x64", 12, 3, 1, false)
+
+// Thermometer icon + big 2x temperature readout
+oled_sprite(6, 20, 16, 16, thermo_icon)
+oled_text(label, 28, 21, 2)
+
+// Status badge on the right
+let status = "COOL"
+if temp_c >= 30 {
+    status = "HOT"
+} else if temp_c >= 22 {
+    status = "WARM"
+}
+oled_rect(88, 20, 34, 15, false)
+oled_text(status, 93, 24, 1)
+
+// Scale bar (-20C to 50C)
+oled_line(6, 42, 121, 42)
+oled_text("-20", 6, 46, 1)
+oled_text("50C", 104, 46, 1)
+let bar_w = clamp(map(temp_c, -20, 50, 2, 112), 2, 112)
+oled_rect(6, 55, 116, 7, false)
+oled_rect(8, 57, bar_w, 3, true)
+
+// Decorative corner indicator dot
+oled_circle(121, 6, 2, true, false)
+
+oled_show()
+print("oled temp:", temp_c, "C status:", status)
+
+free(label)
+free(thermo_icon)

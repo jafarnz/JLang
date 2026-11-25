@@ -54,6 +54,38 @@ static void on_frame(void *ud, uint32_t ms, int w, int h, const uint32_t *rgb) {
 EXPORT(jlw_frames) const uint8_t *jlw_frames(void) { return frames; }
 EXPORT(jlw_frames_len) size_t jlw_frames_len(void) { return frames_len; }
 
+/* Frames from oled_show(): ms (u32 LE), flags (u8: bit 0 = inverted),
+   contrast (u8), followed by the 1,024-byte 128x64 page framebuffer. */
+#define OLED_FRAMES_MAX (8u * 1024u * 1024u)
+static uint8_t *oled_frames;
+static size_t oled_frames_len, oled_frames_cap;
+
+static void on_oled_frame(void *ud, uint32_t ms, const uint8_t *fb, bool inverted, uint8_t contrast) {
+    (void)ud;
+    size_t need = 6 + OLED_FB_SIZE;
+    if (oled_frames_len + need > OLED_FRAMES_MAX) return;
+    if (oled_frames_len + need > oled_frames_cap) {
+        size_t cap = oled_frames_cap ? oled_frames_cap : 16384;
+        while (cap < oled_frames_len + need) cap *= 2;
+        uint8_t *f = realloc(oled_frames, cap);
+        if (f == NULL) return;
+        oled_frames = f;
+        oled_frames_cap = cap;
+    }
+    uint8_t *p = oled_frames + oled_frames_len;
+    p[0] = (uint8_t)ms;
+    p[1] = (uint8_t)(ms >> 8);
+    p[2] = (uint8_t)(ms >> 16);
+    p[3] = (uint8_t)(ms >> 24);
+    p[4] = inverted ? 1u : 0u;
+    p[5] = contrast;
+    memcpy(p + 6, fb, OLED_FB_SIZE);
+    oled_frames_len += need;
+}
+
+EXPORT(jlw_oled_frames) const uint8_t *jlw_oled_frames(void) { return oled_frames; }
+EXPORT(jlw_oled_frames_len) size_t jlw_oled_frames_len(void) { return oled_frames_len; }
+
 /* The pins as a waveform (VCD text), for the waveform view and download. */
 #define VCD_MAX (8u * 1024u * 1024u)
 static Vcd *vcd;
@@ -360,6 +392,7 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     trace_len = 0;
     truncated = false;
     frames_len = 0;
+    oled_frames_len = 0;
     vcd_len = 0;
     vcd_free(vcd);
     vcd = vcd_new();
@@ -382,6 +415,7 @@ int jlw_run(const char *src, int mode, const char *emits, const char *pins,
     if (voice_buf[0] != '\0') opt.voice_text = voice_buf;
     opt.print_frames = false; /* the page draws the frames */
     opt.frame_sink = on_frame;
+    opt.oled_sink = on_oled_frame;
     opt.max_ms = SIM_SECONDS * 1000;
     opt.vcd = vcd;
     for (const char *p = pins; p != NULL && *p;) {

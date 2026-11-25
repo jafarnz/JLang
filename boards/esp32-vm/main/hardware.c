@@ -37,6 +37,7 @@
 #include "hardware.h"
 #include "hw.h"
 #include "led_strip.h"
+#include "oled.h"
 
 #define MAX_PWM 6      /* LEDC channels used, the minimum every ESP32 has */
 
@@ -50,6 +51,11 @@
 /* Each LED at full white draws about 60 mA, so a whole panel would need more
    than USB can give. Colours are scaled down to this many 255ths. */
 #define PANEL_BRIGHTNESS 24
+
+/* 128x64 I2C OLED (SH1106 1.3" uses column offset 2; set OLED_SH1106 to 0
+   for a 0.96" SSD1306 panel). */
+#define OLED_I2C_ADDR 0x3C
+#define OLED_SH1106 1
 /* I2C and SPI pins: the SDA/SCL and SCK/MISO/MOSI pins printed on XIAO
    boards (D4, D5 and D8, D9, D10), or the usual ones on other boards. */
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -557,6 +563,72 @@ static bool b_i2c_write(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+static bool b_i2c_write_buf(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc; (void)out;
+    i2c_master_dev_handle_t dev;
+    uint8_t prefix;
+    uint8_t *bytes = NULL;
+    uint32_t len = 0;
+    int32_t off, count;
+    if (!i2c_dev(vm, "i2c_write_buf", args[0], &dev) ||
+        !get_byte(vm, "i2c_write_buf", 2, args[1], &prefix) ||
+        !jl_get_bytes(vm, "i2c_write_buf", args[2], &bytes, &len) ||
+        !jl_get_int(vm, "i2c_write_buf", 4, args[3], &off) ||
+        !jl_get_int(vm, "i2c_write_buf", 5, args[4], &count)) return false;
+    if (off < 0 || count < 1 || count > 256 || (uint32_t)off + (uint32_t)count > len) {
+        return jl_error(vm, "i2c_write_buf(): slice off=%d count=%d is out of bounds (buffer has %u bytes, max count 256)",
+                        (int)off, (int)count, (unsigned)len);
+    }
+    uint8_t pkt[257];
+    pkt[0] = prefix;
+    memcpy(pkt + 1, bytes + off, (size_t)count);
+    if (i2c_master_transmit(dev, pkt, (size_t)count + 1, 100) != ESP_OK)
+        return jl_error(vm, "i2c_write_buf(): the device didn't answer. Check its address and wiring");
+    return true;
+}
+
+static Oled hw_oled;
+static bool hw_oled_inited;
+
+static bool oled_hw_show(JlVM *vm, Oled *o, void *ud) {
+    (void)ud;
+    i2c_master_dev_handle_t dev;
+    if (!i2c_dev(vm, "oled_show", int_val(OLED_I2C_ADDR), &dev)) return false;
+    if (!hw_oled_inited) {
+        static const uint8_t init_common[] = {
+            0x00, 0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40,
+            0xA1, 0xC8, 0xDA, 0x12, 0x81, 0xCF, 0xDB, 0x40, 0xA4, 0xA6
+        };
+        if (i2c_master_transmit(dev, init_common, sizeof init_common, 100) != ESP_OK)
+            return jl_error(vm, "oled_show(): no OLED answered at I2C 0x%02X. Check SDA/SCL wiring", OLED_I2C_ADDR);
+#if OLED_SH1106
+        static const uint8_t init_pwr[] = {0x00, 0xAD, 0x8B, 0xD9, 0x22, 0xAF};
+#else
+        static const uint8_t init_pwr[] = {0x00, 0x8D, 0x14, 0xD9, 0xF1, 0xAF};
+#endif
+        if (i2c_master_transmit(dev, init_pwr, sizeof init_pwr, 100) != ESP_OK)
+            return jl_error(vm, "oled_show(): failed to power on OLED at 0x%02X", OLED_I2C_ADDR);
+        hw_oled_inited = true;
+    }
+    uint8_t state_cmd[4] = {0x00, 0x81, o->contrast, o->inverted ? 0xA7 : 0xA6};
+    if (i2c_master_transmit(dev, state_cmd, sizeof state_cmd, 100) != ESP_OK)
+        return jl_error(vm, "oled_show(): failed to update OLED state");
+
+    uint8_t x0 = OLED_SH1106 ? 2 : 0;
+    uint8_t page_pkt[1 + OLED_W];
+    page_pkt[0] = 0x40;
+    for (int p = 0; p < OLED_PAGES; p++) {
+        uint8_t pos_cmd[4] = {0x00, (uint8_t)(0xB0 | p), (uint8_t)(x0 & 0x0F), (uint8_t)(0x10 | (x0 >> 4))};
+        if (i2c_master_transmit(dev, pos_cmd, sizeof pos_cmd, 100) != ESP_OK)
+            return jl_error(vm, "oled_show(): I2C page address transfer failed");
+        memcpy(page_pkt + 1, o->fb + p * OLED_W, OLED_W);
+        if (i2c_master_transmit(dev, page_pkt, sizeof page_pkt, 100) != ESP_OK)
+            return jl_error(vm, "oled_show(): I2C page data transfer failed");
+    }
+    o->frames++;
+    return true;
+}
+
 static bool read_reg(JlVM *vm, const char *fn, Value *args, uint8_t *data, size_t n) {
     i2c_master_dev_handle_t dev;
     uint8_t reg;
@@ -650,6 +722,7 @@ void hardware_reset(void) {
     }
     memset(panel, 0, sizeof panel);
     if (panel_strip != NULL) led_strip_clear(panel_strip);
+    oled_init(&hw_oled);
 }
 
 void hardware_register(JlVM *vm) {
@@ -657,6 +730,7 @@ void hardware_register(JlVM *vm) {
     if (!registered) {
         for (int i = 0; i < MAX_PWM; i++) pwm[i].pin = -1;
         for (int i = 0; i < MAX_STRIPS; i++) strips[i].pin = -1;
+        oled_init(&hw_oled);
         registered = true;
     }
     jl_register_native(vm, "turn_on", b_turn_on, 1);
@@ -678,8 +752,10 @@ void hardware_register(JlVM *vm) {
     jl_register_native(vm, "led_height", b_led_height, 0);
     jl_register_native(vm, "led_size", b_led_size, 0);
     jl_register_native(vm, "led_text", b_led_text, 4);
+    oled_register_natives(vm, &hw_oled, oled_hw_show, NULL);
     jl_register_native(vm, "i2c_scan", b_i2c_scan, 0);
     jl_register_native(vm, "i2c_write", b_i2c_write, -1);
+    jl_register_native(vm, "i2c_write_buf", b_i2c_write_buf, 5);
     jl_register_native(vm, "i2c_read", b_i2c_read, 2);
     jl_register_native(vm, "i2c_read16", b_i2c_read16, 2);
     jl_register_native(vm, "spi_write", b_spi_write, -1);

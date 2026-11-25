@@ -9,6 +9,7 @@
 #define JL_BOARD_SIM_H
 
 #include "jlang.h"
+#include "oled.h"
 #include "panel.h"
 #include "vcd.h"
 
@@ -25,10 +26,12 @@ typedef struct {
     int analog_inputs[SIM_PINS]; /* value analog() returns, -1 = 2048 (a knob halfway) */
     int distance_cm;             /* what distance() measures */
     int panel_w, panel_h;        /* LED panel size, default 60 x 7 */
-    bool print_frames;           /* print each led_show() frame as text */
+    bool print_frames;           /* print each led_show() / oled_show() frame as text */
     bool ansi_frames;            /* ... in colour, redrawn in place */
-    JlFrameFn frame_sink;        /* also hand each frame to the host */
+    JlFrameFn frame_sink;        /* also hand each LED frame to the host */
     void *frame_data;
+    JlOledFrameFn oled_sink;     /* also hand each OLED frame to the host */
+    void *oled_data;
     uint32_t max_ms;             /* stop once this much time has passed, 0 = never */
     Vcd *vcd;                    /* record pin changes for a waveform viewer, or NULL */
     int temperature_c;           /* what the simulated I2C temperature sensor measures */

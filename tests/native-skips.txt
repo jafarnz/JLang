@@ -28,6 +28,7 @@ tests/fmt_pad.jlang	fmt() isn't available in native code yet; run it
 tests/i2c_spi.jlang	i2c_scan() isn't available in native code yet; r
 tests/memory.jlang	alloc() isn't available in native code yet (nati
 tests/multimodal_kv.jlang	kv_get() isn't available in native code yet (nat
+tests/oled.jlang	oled_width() isn't available in native code yet;
 tests/pack.jlang	alloc() isn't available in native code yet (nati
 tests/panel_text.jlang	led_text() isn't available in native code yet; r
 tests/ptt_long_answer.jlang	len() isn't available in native code yet (native
@@ -41,6 +42,7 @@ examples/clock.jlang	fmt() isn't available in native code yet; run it
 examples/graph.jlang	in native code, array(n) requires a constant siz
 examples/iris.jlang	chime() isn't available in native code yet; run 
 examples/life.jlang	random() isn't available in native code yet; run
+examples/oled_demo.jlang	i2c_read16() isn't available in native code yet;
 examples/packet.jlang	alloc() isn't available in native code yet (nati
 examples/parking.jlang	distance() isn't available in native code yet; r
 examples/party.jlang	in native code, functions can only be given numb

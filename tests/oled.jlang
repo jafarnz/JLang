@@ -1,0 +1,37 @@
+// Tests built-in 128x64 OLED graphics, sprites, invert, contrast, and i2c_write_buf.
+print(oled_width(), oled_height())
+
+oled_clear()
+oled_pixel(0, 0, true)
+oled_line(0, 0, 10, 10)
+oled_rect(20, 10, 12, 8, false)
+oled_rect(40, 10, 6, 6, true)
+oled_circle(80, 32, 10, false)
+oled_circle(105, 32, 4, true)
+let next_x = oled_text("HI", 4, 48, 2)
+print("next_x:", next_x)
+
+let icon = [
+    [1, 0, 1],
+    [0, 1, 0],
+    [1, 0, 1],
+]
+oled_sprite(60, 48, 3, 3, icon)
+oled_contrast(180)
+oled_invert(true)
+oled_show()
+
+let page = alloc(4)
+page[0] = 0xAA
+page[1] = 0x55
+i2c_write_buf(0x3C, 0x40, page, 0, 2)
+free(page)
+
+for i in 0..len(icon) {
+    free(icon[i])
+}
+free(icon)
+// expect: 128 64
+// expect: next_x: 28
+// expect: [sim      0ms] oled frame 1 (301 px lit, inverted)
+// expect: [sim      0ms] i2c 0x3C write_buf 0x40 (2 bytes)

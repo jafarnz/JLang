@@ -88,10 +88,13 @@ export async function loadJLang(source) {
     // LED panel frames: a copy of the raw frame buffer (see parseFrames)
     const flen = ex.jlw_frames_len()
     const frames = flen ? new Uint8Array(ex.memory.buffer, ex.jlw_frames(), flen).slice().buffer : null
-    return { code, output: merged, frames, vcd, trace }
+    // 128x64 OLED frames: a copy of the raw frame buffer (see parseOledFrames)
+    const olen = ex.jlw_oled_frames_len ? ex.jlw_oled_frames_len() : 0
+    const oledFrames = olen ? new Uint8Array(ex.memory.buffer, ex.jlw_oled_frames(), olen).slice().buffer : null
+    return { code, output: merged, frames, oledFrames, vcd, trace }
   }
 
-  return { run, version: "0.1.0" }
+  return { run, version: "0.1.1" }
 }
 
 // Splits the frame buffer from run() into { ms, w, h, rgb } frames, where rgb
@@ -108,6 +111,24 @@ export function parseFrames(buffer) {
     const size = w * h * 3
     out.push({ ms, w, h, rgb: new Uint8Array(buffer, at + 8, size) })
     at += 8 + size
+  }
+  return out
+}
+
+// Splits the OLED frame buffer from run() into { ms, inverted, contrast, fb }
+// frames, where fb is the 1,024-byte 128x64 page-layout monochrome framebuffer.
+export function parseOledFrames(buffer) {
+  const out = []
+  if (!buffer) return out
+  const view = new DataView(buffer)
+  const frameSize = 6 + 1024
+  let at = 0
+  while (at + frameSize <= buffer.byteLength) {
+    const ms = view.getUint32(at, true)
+    const inverted = (view.getUint8(at + 4) & 1) !== 0
+    const contrast = view.getUint8(at + 5)
+    out.push({ ms, inverted, contrast, fb: new Uint8Array(buffer, at + 6, 1024) })
+    at += frameSize
   }
   return out
 }
