@@ -1,0 +1,17 @@
+// wifi.jlang - simulated Wi-Fi and HTTP GET built-ins.
+assert(wifi_ip() == nil, "disconnected before wifi_connect")
+assert(http_get("https://example.com") == nil, "http_get nil while disconnected")
+
+assert(wifi_connect("TestNet", "secret") == true, "wifi_connect returns true")
+let ip = wifi_ip()
+assert(ip != nil && contains(ip, "."), "wifi_ip returns IPv4 string")
+free(ip)
+
+let resp = http_get("https://jafarniaz.com/api/prayer")
+assert(resp != nil && contains(resp, "MAGHRIB"), "http_get prayer returns mock schedule")
+free(resp)
+
+print("wifi ok")
+// expect: [sim    250ms] wifi connect "TestNet" -> 192.168.1.42
+// expect: [sim    370ms] http_get https://jafarniaz.com/api/prayer -> 200 OK
+// expect: wifi ok

@@ -43,6 +43,7 @@ static struct {
     int kv_count;
     bool recording;
     uint32_t rec_start_ms;
+    bool wifi_connected;
 } sim;
 
 /* Records a signal for --vcd. Names look like "pin2" or "pin7_tone_hz". */
@@ -969,6 +970,62 @@ JlResult board_sim_run_timers(JlVM *vm, uint32_t until_ms) {
     return JL_OK;
 }
 
+static bool sim_wifi_connect(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    const char *ssid, *pass;
+    uint32_t sn, pn;
+    if (!jl_get_string(vm, args[0], &ssid, &sn) || !jl_get_string(vm, args[1], &pass, &pn))
+        return jl_error(vm, "wifi_connect(): expected (ssid, password) strings");
+    if (sn == 0 || sn > 32)
+        return jl_error(vm, "wifi_connect(): ssid must be 1 to 32 bytes");
+    if (pn > 64)
+        return jl_error(vm, "wifi_connect(): password must be at most 64 bytes");
+    advance_time(250);
+    sim.wifi_connected = true;
+    jl_outf(vm, "[sim %6ums] wifi connect \"%.*s\" -> 192.168.1.42\n",
+            (unsigned)sim.now_ms, (int)sn, ssid);
+    *out = bool_val(true);
+    return true;
+}
+
+static bool sim_wifi_ip(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    (void)args;
+    if (!sim.wifi_connected) {
+        *out = nil_val();
+        return true;
+    }
+    return jl_new_string(vm, "192.168.1.42", 12, out);
+}
+
+static bool sim_http_get(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    const char *url;
+    uint32_t un;
+    if (!jl_get_string(vm, args[0], &url, &un))
+        return jl_error(vm, "http_get(): url must be a string");
+    if (un == 0 || un > 512)
+        return jl_error(vm, "http_get(): url must be 1 to 512 bytes");
+    if (!sim.wifi_connected) {
+        *out = nil_val();
+        return true;
+    }
+    advance_time(120);
+    jl_outf(vm, "[sim %6ums] http_get %.*s -> 200 OK\n", (unsigned)sim.now_ms, (int)un, url);
+    /* Return a realistic MUIS Singapore sample when testing the prayer API. */
+    bool is_prayer = false;
+    for (uint32_t i = 0; i + 6 <= un; i++) {
+        if (memcmp(url + i, "prayer", 6) == 0) {
+            is_prayer = true;
+            break;
+        }
+    }
+    const char *body = is_prayer
+                           ? "18:54:55|MAGHRIB|18:55|5|05:44|12:55|16:18|18:55|20:09"
+                           : "OK";
+    return jl_new_string(vm, body, (uint32_t)strlen(body), out);
+}
+
 void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     panel_free(&sim.panel);
     memset(&sim, 0, sizeof sim);
@@ -1034,5 +1091,8 @@ void board_sim_register(JlVM *vm, const BoardSimOptions *o) {
     jl_register_native(vm, "i2c_read16", sim_i2c_read16, 2);
     jl_register_native(vm, "spi_write", sim_spi_write, -1);
     jl_register_native(vm, "spi_transfer", sim_spi_transfer, 2);
+    jl_register_native(vm, "wifi_connect", sim_wifi_connect, 2);
+    jl_register_native(vm, "wifi_ip", sim_wifi_ip, 0);
+    jl_register_native(vm, "http_get", sim_http_get, 1);
     bus.ready = false;
 }

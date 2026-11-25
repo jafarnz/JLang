@@ -47,3 +47,4 @@ examples/packet.jlang	alloc() isn't available in native code yet (nati
 examples/parking.jlang	distance() isn't available in native code yet; r
 examples/party.jlang	in native code, functions can only be given numb
 examples/scroll.jlang	fmt() isn't available in native code yet; run it
+tests/wifi.jlang	wifi_ip() isn't available in native code yet; run it

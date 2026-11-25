@@ -8,11 +8,11 @@ are decided in X, so a taken branch throws away the 2 instructions fetched after
 line           instruction    cycle:     1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 
 2              blt t1, t2, 0xac          F D X M W
 2              auipc t0, 0x5                   F D X M W   after a taken branch: 2 flushed
-2              addi t0, t0, -944                 F D X M W
+2              addi t0, t0, -932                 F D X M W
 2              addi t0, t0, -1024                  F D X M W
 2              bltu s1, t0, 0xcc                     F D X M W
 2              auipc t1, 0x1                               F D X M W   after a taken branch: 2 flushed
-2              addi t1, t1, -980                             F D X M W
+2              addi t1, t1, -968                             F D X M W
 2              sw zero, 0(t1)                                  F D X M W
 3              sw zero, 0(s1)                                    F D X M W
 3              li s2, 0                                            F D X M W

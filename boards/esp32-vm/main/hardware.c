@@ -760,4 +760,5 @@ void hardware_register(JlVM *vm) {
     jl_register_native(vm, "i2c_read16", b_i2c_read16, 2);
     jl_register_native(vm, "spi_write", b_spi_write, -1);
     jl_register_native(vm, "spi_transfer", b_spi_transfer, 2);
+    net_wifi_register(vm);
 }
