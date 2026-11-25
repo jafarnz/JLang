@@ -1,0 +1,191 @@
+// dashboard.jlang - Pomodoro, live clock & bus timing desk dashboard for Glass.
+//
+// LEDs (32x8):   live MM:SS countdown in Pomodoro view, or smooth scrolling
+//                status ticker ("BUS 174 3M  179 6M") in transit/clock view.
+// OLED (128x64): active mode header, digital clock, graphical Pomodoro
+//                progress bar, and next bus arrival times.
+// Controls:      knob selects dashboard page (Pomodoro / Transit / Clock);
+//                button toggles pause/resume in Pomodoro mode.
+
+use "display.jlang"
+
+enum Phase { Focus, Break, Paused }
+enum Page { Pomodoro, Transit, Clock }
+
+const FOCUS_SECS = 1500
+const BREAK_SECS = 300
+
+let phase = Phase.Focus
+let prev_phase = Phase.Focus
+let page = Page.Pomodoro
+let remaining = FOCUS_SECS
+let clock_secs = 9 * 3600 + 42 * 60  // 09:42:00 demo start
+let bus_a = 180  // 3 min
+let bus_b = 420  // 7 min
+let was_pressed = false
+let tick = 0
+let scroll_x = 32
+
+fn phase_label(p) {
+    match p {
+        Phase.Focus => { return "FOCUS" }
+        Phase.Break => { return "BREAK" }
+        Phase.Paused => { return "PAUSED" }
+    }
+}
+
+fn draw_2digit_fb(x, y, v) {
+    fb_char(x, y, '0' + (v / 10) % 10)
+    fb_char(x + 6, y, '0' + v % 10)
+    return x + 12
+}
+
+fn draw_mmss_led(secs) {
+    led_clear_all()
+    let m = secs / 60
+    let s = secs % 60
+    led_char_at(1, '0' + (m / 10) % 10)
+    led_char_at(7, '0' + m % 10)
+    if tick % 2 == 0 {
+        led_pixel(14, 2, 1)
+        led_pixel(14, 5, 1)
+    }
+    led_char_at(17, '0' + (s / 10) % 10)
+    led_char_at(23, '0' + s % 10)
+}
+
+fn draw_ticker_led(msg) {
+    led_clear_all()
+    led_str_at(scroll_x, msg)
+    scroll_x -= 2
+    if scroll_x < -(len(msg) * 6) {
+        scroll_x = 32
+    }
+}
+
+glass_init()
+
+while true {
+    let pressed = pin_read(BUTTON) == 0
+    if pressed && !was_pressed {
+        match phase {
+            Phase.Paused => { phase = prev_phase }
+            Phase.Focus => {
+                prev_phase = Phase.Focus
+                phase = Phase.Paused
+            }
+            Phase.Break => {
+                prev_phase = Phase.Break
+                phase = Phase.Paused
+            }
+        }
+    }
+    was_pressed = pressed
+
+    let k = knob()
+    if k < 1365 {
+        page = Page.Pomodoro
+    } else if k < 2730 {
+        page = Page.Transit
+    } else {
+        page = Page.Clock
+    }
+
+    // Advance virtual clock & timers every 5 ticks (500 ms -> 1 s accelerated in sim)
+    if tick % 5 == 0 {
+        clock_secs = (clock_secs + 1) % 86400
+        bus_a -= 1
+        if bus_a <= 0 {
+            bus_a = 480
+        }
+        bus_b -= 1
+        if bus_b <= 0 {
+            bus_b = 600
+        }
+        match phase {
+            Phase.Focus => {
+                remaining -= 1
+                if remaining <= 0 {
+                    phase = Phase.Break
+                    remaining = BREAK_SECS
+                }
+            }
+            Phase.Break => {
+                remaining -= 1
+                if remaining <= 0 {
+                    phase = Phase.Focus
+                    remaining = FOCUS_SECS
+                }
+            }
+            Phase.Paused => {}
+        }
+    }
+
+    fb_clear()
+    let hh = clock_secs / 3600
+    let mm = (clock_secs % 3600) / 60
+    let ss = clock_secs % 60
+
+    match page {
+        Page.Pomodoro => {
+            draw_mmss_led(remaining)
+            fb_str(0, 0, "DESK ")
+            fb_str(30, 0, phase_label(phase))
+            draw_2digit_fb(96, 0, hh)
+            fb_char(108, 0, ':')
+            draw_2digit_fb(114, 0, mm)
+            fb_hline(0, 127, 9)
+
+            fb_str(0, 16, "TIMER  ")
+            draw_2digit_fb(42, 16, remaining / 60)
+            fb_char(54, 16, ':')
+            draw_2digit_fb(60, 16, remaining % 60)
+
+            let total = FOCUS_SECS
+            if phase == Phase.Break {
+                total = BREAK_SECS
+            }
+            let done = clamp((total - remaining) * 124 / total, 2, 124)
+            fb_rect(0, 28, 128, 8, false)
+            fb_rect(2, 30, done, 4, true)
+
+            fb_str(0, 48, "BUS 174: ")
+            let nx = fb_int(54, 48, (bus_a + 59) / 60)
+            fb_str(nx, 48, "m")
+            fb_str(0, 56, "BUS 179: ")
+            nx = fb_int(54, 56, (bus_b + 59) / 60)
+            fb_str(nx, 56, "m")
+        }
+        Page.Transit => {
+            draw_ticker_led("BUS 174 3M  179 7M")
+            fb_str(0, 0, "NEXT BUSES")
+            fb_hline(0, 127, 9)
+            fb_str(0, 16, "174  ")
+            let nx = fb_int(30, 16, (bus_a + 59) / 60)
+            fb_str(nx, 16, " min  (seats)")
+            fb_str(0, 32, "179  ")
+            nx = fb_int(30, 32, (bus_b + 59) / 60)
+            fb_str(nx, 32, " min  (stand)")
+            fb_hline(0, 127, 46)
+            fb_str(0, 56, "POMO ")
+            fb_str(30, 56, phase_label(phase))
+        }
+        Page.Clock => {
+            draw_mmss_led(hh * 60 + mm)
+            fb_str(0, 0, "GLASS CLOCK")
+            fb_hline(0, 127, 9)
+            draw_2digit_fb(34, 24, hh)
+            fb_char(46, 24, ':')
+            draw_2digit_fb(52, 24, mm)
+            fb_char(64, 24, ':')
+            draw_2digit_fb(70, 24, ss)
+            fb_str(0, 48, "MODE: ")
+            fb_str(36, 48, phase_label(phase))
+        }
+    }
+
+    led_show()
+    fb_show()
+    tick += 1
+    delay(100)
+}

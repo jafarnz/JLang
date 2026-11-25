@@ -2,12 +2,11 @@
 # exactly these, and only when the native compile error contains the reason
 # given here; any other native compile error is a failure. Format:
 # path<TAB>part of the error message
-tests/arrays.jlang	arrays aren't available in native code yet (nati
+tests/arrays.jlang	printing whole arrays isn't available in native code
 tests/board.jlang	capture() isn't available in native code yet (na
 tests/compact.jlang	alloc() isn't available in native code yet (nati
 tests/defer_mem.jlang	alloc() isn't available in native code yet (nati
 tests/easy_hardware.jlang	turn_on() isn't available in native code yet; ru
-tests/err_array_bounds.jlang	arrays aren't available in native code yet (nati
 tests/err_bounds.jlang	alloc() isn't available in native code yet (nati
 tests/err_byte.jlang	alloc() isn't available in native code yet (nati
 tests/err_double_free.jlang	alloc() isn't available in native code yet (nati
@@ -16,7 +15,7 @@ tests/err_fragmented.jlang	alloc() isn't available in native code yet (nati
 tests/err_leak.jlang	alloc() isn't available in native code yet (nati
 tests/err_print_freed.jlang	joining strings with + isn't available in native
 tests/err_slice.jlang	slice() isn't available in native code yet (nati
-tests/err_struct_field.jlang	structs aren't available in native code yet (nat
+tests/err_struct_field.jlang	Reading has no field 'tmp'
 tests/err_timer.jlang	every and after blocks aren't available in nativ
 tests/err_uaf_reused.jlang	alloc() isn't available in native code yet (nati
 tests/err_uaf_string.jlang	trim() isn't available in native code yet (nativ
@@ -25,18 +24,20 @@ tests/fmt_pad.jlang	fmt() isn't available in native code yet; run it
 tests/i2c_spi.jlang	i2c_scan() isn't available in native code yet; r
 tests/memory.jlang	alloc() isn't available in native code yet (nati
 tests/multimodal_kv.jlang	kv_get() isn't available in native code yet (nat
+tests/pack.jlang	alloc() isn't available in native code yet (nati
 tests/panel_text.jlang	led_text() isn't available in native code yet; r
 tests/ptt_long_answer.jlang	len() isn't available in native code yet (native
+tests/ring.jlang	ring() isn't available in native code yet (nativ
 tests/strings.jlang	len() isn't available in native code yet (native
 tests/strings_build.jlang	joining strings with + isn't available in native
 tests/strings_helpers.jlang	contains() isn't available in native code yet; r
-tests/structs.jlang	structs aren't available in native code yet (nat
+tests/structs.jlang	printing whole structs isn't available in native
 tests/timers.jlang	every and after blocks aren't available in nativ
 examples/clock.jlang	fmt() isn't available in native code yet; run it
-examples/graph.jlang	array() isn't available in native code yet; run 
+examples/graph.jlang	in native code, array(n) requires a constant siz
 examples/iris.jlang	chime() isn't available in native code yet; run 
 examples/life.jlang	random() isn't available in native code yet; run
 examples/packet.jlang	alloc() isn't available in native code yet (nati
 examples/parking.jlang	distance() isn't available in native code yet; r
 examples/party.jlang	in native code, functions can only be given numb
-examples/scroll.jlang	arrays aren't available in native code yet (nati
+examples/scroll.jlang	fmt() isn't available in native code yet; run it

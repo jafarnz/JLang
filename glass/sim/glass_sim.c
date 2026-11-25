@@ -256,6 +256,28 @@ static void echo(void *ud, const char *data, size_t len) {
     fwrite(data, 1, len, stderr);
 }
 
+static char *sim_read_file(void *ud, const char *path) {
+    (void)ud;
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)n + 1);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    if (fread(buf, 1, (size_t)n, f) != (size_t)n) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    buf[n] = 0;
+    fclose(f);
+    return buf;
+}
+
 int main(int argc, char **argv) {
     s.until = 20000;
     s.out_dir = ".";
@@ -275,12 +297,12 @@ int main(int argc, char **argv) {
         else if (a[0] != '-' && nfiles < 2) files[nfiles++] = a;
         else {
             fprintf(stderr, "usage: glass_sim [--knob N] [--press MS] [--snap MS]... [--out DIR] [--until MS] "
-                            "[--ssd1306] glass.jlang program.jlang\n");
+                            "[--ssd1306] glass.jlang [program.jlang]\n");
             return 64;
         }
     }
-    if (nfiles != 2) {
-        fprintf(stderr, "glass_sim: give the display program and the program to show\n");
+    if (nfiles < 1) {
+        fprintf(stderr, "glass_sim: give a Glass app or display program (and optional program to show)\n");
         return 64;
     }
 
@@ -288,6 +310,7 @@ int main(int argc, char **argv) {
     jl_default_config(&cfg);
     cfg.heap_size = 16 * 1024;
     JlVM *display = jl_new(&cfg);
+    jl_set_file_reader(display, files[0], sim_read_file, NULL);
     jl_register_native(display, "pin_mode", b_pin_mode, 2);
     jl_register_native(display, "pin_write", b_pin_write, 2);
     jl_register_native(display, "pin_read", b_pin_read, 1);
@@ -298,22 +321,29 @@ int main(int argc, char **argv) {
     glass_register(display);
 
     char *glass = read_file(files[0]);
-    if (jl_run_source(display, glass) != JL_OK) return 70;
-    char *program = read_file(files[1]);
-    /* Like the firmware: run the program again each time it ends. */
-    while (s.now < s.until) {
-        long long before = s.now;
-        glass_run(display, program, 16 * 1024, echo);
-        if (s.now == before && !advance(display, 1000)) break;
+    JlResult r = jl_run_source(display, glass);
+    if (r != JL_OK && !(nfiles == 1 && s.now >= s.until)) {
+        jl_free(display);
+        free(glass);
+        return 70;
     }
-    s.frames = (long)glass_ticks();
-    if (stats && s.frames > 0)
-        fprintf(stderr, "%ld frames, %llu display instructions and %ld I2C bytes per frame\n", s.frames,
-                (unsigned long long)(jl_cycles(display) / (uint64_t)s.frames), s.i2c_bytes / s.frames);
+    if (nfiles == 2) {
+        char *program = read_file(files[1]);
+        /* Like the firmware: run the program again each time it ends. */
+        while (s.now < s.until) {
+            long long before = s.now;
+            glass_run(display, program, 16 * 1024, echo);
+            if (s.now == before && !advance(display, 1000)) break;
+        }
+        s.frames = (long)glass_ticks();
+        if (stats && s.frames > 0)
+            fprintf(stderr, "%ld frames, %llu display instructions and %ld I2C bytes per frame\n", s.frames,
+                    (unsigned long long)(jl_cycles(display) / (uint64_t)s.frames), s.i2c_bytes / s.frames);
+        free(program);
+    }
     /* pictures requested after the end */
     while (s.next_snap < s.nsnaps) snapshot(s.snaps[s.next_snap++]);
     jl_free(display);
     free(glass);
-    free(program);
     return 0;
 }

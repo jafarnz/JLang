@@ -11,6 +11,7 @@ const char *value_type_name(Value v) {
     case VAL_NATIVE: return "built-in fn";
     case VAL_ARR: return "array";
     case VAL_STRUCT: return "struct";
+    case VAL_RING: return "ring";
     }
     return "?";
 }

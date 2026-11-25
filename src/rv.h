@@ -58,6 +58,7 @@ typedef struct {
     uint8_t *image;     /* memory contents, starting at address 0 */
     uint32_t size;      /* bytes used, including .bss */
     uint32_t text_size;
+    uint32_t bss_start; /* byte offset where .bss begins */
     RvSymbol *syms;
     int nsyms;
     RvLine *lines;

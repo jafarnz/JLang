@@ -1,0 +1,10 @@
+// Matching on an enum without '_' must cover every member.
+// exit: 65
+enum State { IDLE, BUSY, DONE }
+let s = State.IDLE
+match s {
+    State.IDLE => { print(0) }
+}
+// expect: error (line 5, col 1): non-exhaustive match on enum 'State': missing State.BUSY, State.DONE (add arms or a '_' catch-all)
+// expect:      5 | match s {
+// expect:        | ^

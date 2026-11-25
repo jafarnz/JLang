@@ -59,3 +59,15 @@ make build/glass_sim
 ```
 
 `--knob` sets the knob from 0 to 4095, `--press` presses the button every so many milliseconds, and `--snap` prints the LEDs and the screen at a moment of virtual time and saves a picture as `snap-<ms>.ppm`. `--stats` prints how many VM instructions and I2C bytes each frame took.
+
+## Standalone dual-display apps
+
+`glass_sim` also runs standalone dual-display apps with a single file argument. See [`apps/README.md`](apps/README.md) for five ready-to-run apps built on the shared [`apps/display.jlang`](apps/display.jlang) driver module: a fixed-point 3D corridor raycaster, Pong, a bitwise programmer's calculator, a Wi-Fi 6 / BLE 5 signal radar, and a Pomodoro desk dashboard.
+
+```bash
+./build/glass_sim --knob 400 --snap 500 --until 600 glass/apps/raycaster.jlang
+./build/glass_sim --knob 2000 --snap 800 --until 900 glass/apps/pong.jlang
+./build/glass_sim --knob 1600 --press 300 --snap 800 --until 900 glass/apps/calc.jlang
+./build/glass_sim --knob 1200 --press 400 --snap 800 --until 900 glass/apps/radar.jlang
+./build/glass_sim --knob 500 --snap 800 --until 900 glass/apps/dashboard.jlang
+```

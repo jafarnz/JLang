@@ -1,0 +1,145 @@
+// pong.jlang - dual-display Pong for Glass.
+//
+// OLED (128x64): full court with center net, player paddle (left), AI paddle
+//                (right), and ball physics.
+// LEDs (32x8):   live big-digit scoreboard (P1 - AI) plus rally streak bar.
+// Controls:      turn the knob to move your paddle; press button to reset.
+
+use "display.jlang"
+
+const PADDLE_H = 14
+const PADDLE_W = 3
+const BALL_SZ = 3
+
+let p1_y = 25
+let ai_y = 25
+let bx = 64
+let by = 32
+let vx = 3
+let vy = 2
+let s1 = 0
+let s2 = 0
+let rally = 0
+
+fn draw_scoreboard() {
+    led_clear_all()
+    let d1 = clamp(s1, 0, 99)
+    let d2 = clamp(s2, 0, 99)
+    led_char_at(0, '0' + d1 / 10)
+    led_char_at(6, '0' + d1 % 10)
+    led_char_at(13, '-')
+    led_char_at(20, '0' + d2 / 10)
+    led_char_at(26, '0' + d2 % 10)
+    // Rally meter along bottom row
+    let bars = clamp(rally, 0, 32)
+    for x in 0..bars {
+        led_pixel(x, 7, 1)
+    }
+}
+
+fn draw_court() {
+    fb_clear()
+    fb_hline(0, 127, 0)
+    fb_hline(0, 127, 63)
+    // Dashed center net
+    let y = 2
+    while y < 62 {
+        fb_vline(64, y, y + 2)
+        y += 6
+    }
+    // Paddles & ball
+    fb_rect(4, p1_y, PADDLE_W, PADDLE_H, true)
+    fb_rect(121, ai_y, PADDLE_W, PADDLE_H, true)
+    fb_rect(bx, by, BALL_SZ, BALL_SZ, true)
+}
+
+fn reset_ball(dir) {
+    bx = 62
+    by = 30
+    vx = dir * 3
+    if rally % 2 == 0 {
+        vy = 2
+    } else {
+        vy = -2
+    }
+    rally = 0
+}
+
+glass_init()
+
+while true {
+    if pin_read(BUTTON) == 0 {
+        s1 = 0
+        s2 = 0
+        reset_ball(1)
+    }
+
+    let k = knob()
+    if k > 80 {
+        p1_y = clamp(map(k, 80, 4095, 2, 62 - PADDLE_H), 2, 62 - PADDLE_H)
+    } else {
+        // Demo autopilot when knob is parked at 0
+        let target = by - PADDLE_H / 2
+        if p1_y < target {
+            p1_y += 2
+        } else if p1_y > target {
+            p1_y -= 2
+        }
+        p1_y = clamp(p1_y, 2, 62 - PADDLE_H)
+    }
+
+    // AI tracks ball with slight lag so rallies are winnable
+    let ai_target = by - PADDLE_H / 2
+    if ai_y + 1 < ai_target {
+        ai_y += 2
+    } else if ai_y - 1 > ai_target {
+        ai_y -= 2
+    }
+    ai_y = clamp(ai_y, 2, 62 - PADDLE_H)
+
+    bx += vx
+    by += vy
+
+    if by <= 2 {
+        by = 2
+        vy = -vy
+    }
+    if by + BALL_SZ >= 62 {
+        by = 62 - BALL_SZ
+        vy = -vy
+    }
+
+    // Left paddle hit
+    if vx < 0 && bx <= 4 + PADDLE_W && bx >= 2 && by + BALL_SZ >= p1_y && by <= p1_y + PADDLE_H {
+        bx = 4 + PADDLE_W
+        vx = -vx
+        let offset = (by - (p1_y + PADDLE_H / 2)) / 3
+        vy = clamp(offset, -3, 3)
+        if vy == 0 {
+            vy = 1
+        }
+        rally += 1
+    }
+
+    // Right paddle hit
+    if vx > 0 && bx + BALL_SZ >= 121 && bx <= 125 && by + BALL_SZ >= ai_y && by <= ai_y + PADDLE_H {
+        bx = 121 - BALL_SZ
+        vx = -vx
+        rally += 1
+    }
+
+    // Score checks
+    if bx < 0 {
+        s2 += 1
+        reset_ball(1)
+    } else if bx > 127 {
+        s1 += 1
+        reset_ball(-1)
+    }
+
+    draw_court()
+    draw_scoreboard()
+    led_show()
+    fb_show()
+    delay(40)
+}

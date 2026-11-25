@@ -1,0 +1,119 @@
+// calc.jlang - pocket programmer's bitwise & fixed-point calculator for Glass.
+//
+// OLED (128x64): shows operands A and B, selected operator (AND, OR, XOR,
+//                SHL, SHR, ADD, FIX_MUL), and the exact decimal + hex result.
+// LEDs (32x8):   live 32-bit binary visualizer:
+//                  rows 0..1 = Operand A (bit 31 on left .. bit 0 on right)
+//                  rows 3..4 = Operand B
+//                  rows 6..7 = Result (so you see every bit flip live)
+// Controls:      knob adjusts operand A (0..255); button cycles the operator.
+
+use "display.jlang"
+
+enum Op { And, Or, Xor, Shl, Shr, Add, FixMul }
+
+let op_mode = Op.And
+let op_idx = 0
+let was_pressed = false
+let tick = 0
+
+fn op_from_idx(i) {
+    let m = i % 7
+    if m == 0 { return Op.And }
+    if m == 1 { return Op.Or }
+    if m == 2 { return Op.Xor }
+    if m == 3 { return Op.Shl }
+    if m == 4 { return Op.Shr }
+    if m == 5 { return Op.Add }
+    return Op.FixMul
+}
+
+fn op_label(m) {
+    match m {
+        Op.And => { return "A & B" }
+        Op.Or => { return "A | B" }
+        Op.Xor => { return "A ^ B" }
+        Op.Shl => { return "A << (B & 15)" }
+        Op.Shr => { return "A >> (B & 15)" }
+        Op.Add => { return "sat_add(A, B)" }
+        Op.FixMul => { return "fix_mul(A,B,8)" }
+    }
+}
+
+fn eval_op(m, a, b) {
+    match m {
+        Op.And => { return a & b }
+        Op.Or => { return a | b }
+        Op.Xor => { return a ^ b }
+        Op.Shl => { return a << (b & 15) }
+        Op.Shr => { return a >> (b & 15) }
+        Op.Add => { return sat_add(a, b) }
+        Op.FixMul => { return fix_mul(a, b, 8) }
+    }
+}
+
+glass_init()
+
+while true {
+    let pressed = pin_read(BUTTON) == 0
+    if pressed && !was_pressed {
+        op_idx += 1
+        op_mode = op_from_idx(op_idx)
+    }
+    was_pressed = pressed
+
+    let k = knob()
+    let a = 0x00FF00A5
+    if k > 50 {
+        a = map(k, 50, 4095, 0, 65535)
+    } else {
+        a = 0x00FF00A5 ^ (tick * 17)
+    }
+    let b = 0x000F0F55
+    if op_mode == Op.Shl || op_mode == Op.Shr {
+        b = 4
+    } else if op_mode == Op.FixMul {
+        // 1.5 in Q8 fixed-point (384 / 256 = 1.5)
+        b = 384
+    }
+
+    let res = eval_op(op_mode, a, b)
+
+    // 32x8 LED matrix: bit-level register view (A, B, Result)
+    led_clear_all()
+    led_row32(0, a)
+    led_row32(1, a)
+    led_row32(3, b)
+    led_row32(4, b)
+    led_row32(6, res)
+    led_row32(7, res)
+
+    // 128x64 OLED: programmer readout
+    fb_clear()
+    fb_str(0, 0, "CALC ")
+    fb_str(30, 0, op_label(op_mode))
+    fb_hline(0, 127, 9)
+
+    fb_str(0, 16, "A ")
+    fb_hex(12, 16, a)
+    fb_str(0, 24, "B ")
+    fb_hex(12, 24, b)
+    fb_hline(0, 127, 34)
+
+    fb_str(0, 40, "= ")
+    fb_hex(12, 40, res)
+    fb_str(0, 48, "DEC ")
+    fb_int(24, 48, res)
+
+    // Low 16-bit binary readout on bottom line
+    fb_str(0, 56, "0b")
+    for i in 0..16 {
+        let bit = res[15 - i]
+        fb_char(12 + i * 6, 56, '0' + bit)
+    }
+
+    led_show()
+    fb_show()
+    tick += 1
+    delay(100)
+}

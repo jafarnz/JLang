@@ -1,0 +1,37 @@
+// Fixed-capacity ring buffer: wrap-around, full/empty, peek, clear, compact, leak-free.
+let r = ring(4)
+defer free(r)
+
+assert(ring_cap(r) == 4)
+assert(ring_empty(r))
+assert(!ring_full(r))
+assert(len(r) == 0)
+assert(ring_pop(r) == nil)
+assert(ring_peek(r) == nil)
+
+assert(ring_push(r, 10))
+assert(ring_push(r, 20))
+assert(ring_push(r, 30))
+assert(ring_push(r, 40))
+assert(!ring_push(r, 50))
+assert(ring_full(r))
+assert(len(r) == 4)
+print(r, ring_peek(r))
+
+// Pop 2, push 2 more (forces wrap-around past slot 3 -> 0, 1).
+print(ring_pop(r), ring_pop(r))
+assert(ring_push(r, 50))
+assert(ring_push(r, 60))
+assert(ring_full(r))
+
+// Compact heap while ring holds live data.
+compact()
+print(ring_pop(r), ring_pop(r), ring_pop(r), ring_pop(r), ring_pop(r))
+assert(ring_empty(r))
+
+ring_push(r, 99)
+ring_clear(r)
+assert(len(r) == 0 && ring_empty(r))
+// expect: <ring 4/4> 10
+// expect: 10 20
+// expect: 30 40 50 60 nil

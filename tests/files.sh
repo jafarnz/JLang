@@ -80,5 +80,42 @@ else
     echo "FAIL: jlang test fail-cases (rc=$rc: $out)"
 fi
 
+# Built-in `jlang fmt`: formats code, --check, -w, idempotence, and stdin
+cat > "$TMP/messy.jlang" <<'EOF'
+
+
+enum Mode{Idle,Run}
+fn add(a,b){
+let x=a+-1   // keep comment
+if x>0{
+return x+b
+}else{
+return 0
+}
+}
+EOF
+cat > "$TMP/messy.expected.jlang" <<'EOF'
+enum Mode { Idle, Run }
+fn add(a, b) {
+    let x = a + -1  // keep comment
+    if x > 0 {
+        return x + b
+    } else {
+        return 0
+    }
+}
+EOF
+"$BIN" fmt "$TMP/messy.jlang" > "$TMP/messy.out.jlang" 2>&1
+check "fmt stdout" "$TMP/messy.expected.jlang" "$TMP/messy.out.jlang"
+"$BIN" fmt - < "$TMP/messy.jlang" > "$TMP/messy.stdin.jlang" 2>&1
+check "fmt stdin" "$TMP/messy.expected.jlang" "$TMP/messy.stdin.jlang"
+"$BIN" fmt --check "$TMP/messy.jlang" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 1 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: fmt --check unformatted (rc=$rc)"; fi
+"$BIN" fmt -w "$TMP/messy.jlang" >/dev/null 2>&1
+"$BIN" fmt --check "$TMP/messy.jlang" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: fmt -w then --check (rc=$rc)"; fi
+
 echo "files: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

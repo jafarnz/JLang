@@ -859,6 +859,7 @@ bool rv_assemble(const char *src, RvImage *out, bool want_listing, bool allow_un
         a.base[SEC_BSS] = align4(a.base[SEC_DATA] + a.off[SEC_DATA]);
         out->size = a.base[SEC_BSS] + a.off[SEC_BSS];
         out->text_size = a.off[SEC_TEXT];
+        out->bss_start = a.base[SEC_BSS];
         if (out->size > RV_RAM_SIZE - 64 * 1024) {
             snprintf(out->error, sizeof out->error, "program is too big (%u bytes)", (unsigned)out->size);
             a.failed = true;

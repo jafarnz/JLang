@@ -30,5 +30,16 @@ check startup --knob 0 --snap 1000 --until 1100
 check paused --knob 0 --press 300 --snap 6000 --until 6100
 check running --knob 2600 --snap 9000 --until 9100
 check finished --knob 4095 --snap 2300 --until 2400
+
+for app in raycaster pong calc radar dashboard; do
+    if "$SIM" --knob 1200 --press 400 --snap 500 --until 600 --out "$TMP" "$DIR/glass/apps/$app.jlang" > "$TMP/app-$app.txt" 2>/dev/null \
+       && grep -q '#' "$TMP/app-$app.txt" && grep -q '█' "$TMP/app-$app.txt"; then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1))
+        echo "glass: app $app failed to render both displays"
+    fi
+done
+
 echo "glass: $pass simulator pictures match, $fail differ"
 [[ $fail -eq 0 ]]

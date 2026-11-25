@@ -117,6 +117,11 @@ typedef struct {
      * value is a temporary string that can be freed after joining. */
     int add_end;
     Chunk *add_chunk;
+
+    /* Most recent plain Enum.MEMBER expression, for exhaustive enum match checking. */
+    int last_enum_end;
+    uint16_t last_enum_si;
+    uint16_t last_enum_mem_si;
 } Compiler;
 
 typedef void (*ParseFn)(Compiler *c, bool can_assign);
@@ -831,6 +836,9 @@ static void variable(Compiler *c, bool can_assign) {
                 return;
             }
             emit_const(c, int_val(val));
+            c->last_enum_end = chunk(c)->count;
+            c->last_enum_si = enum_si;
+            c->last_enum_mem_si = (uint16_t)program_intern(&c->vm->prog, mem.start, (uint32_t)mem.length);
             return;
         }
     }
@@ -1318,6 +1326,9 @@ static void match_stmt(Compiler *c) {
     int ends[256];
     int end_count = 0;
     bool saw_default = false;
+    int match_enum_si = -1;
+    bool mixed_patterns = false;
+    bool seen_member[256] = {false};
 
     while (!check(c, TOK_RBRACE) && !check(c, TOK_EOF)) {
         if (saw_default) {
@@ -1349,7 +1360,35 @@ static void match_stmt(Compiler *c) {
         int hit_count = 0;
         for (;;) {
             emit2(c, OP_GET_LOCAL, (uint8_t)subject_slot);
+            Token pat_tok = c->cur;
+            c->last_enum_end = -1;
             expression(c);
+            if (!c->had_error && c->last_enum_end == chunk(c)->count) {
+                if (match_enum_si < 0) match_enum_si = (int)c->last_enum_si;
+                else if (match_enum_si != (int)c->last_enum_si) mixed_patterns = true;
+                if (!mixed_patterns) {
+                    const Program *p = &c->vm->prog;
+                    int ord = 0;
+                    for (int m = 0; m < p->enum_member_count; m++) {
+                        if (p->enum_members[m].enum_name != c->last_enum_si) continue;
+                        if (p->enum_members[m].member_name == c->last_enum_mem_si) {
+                            if (ord < 256) {
+                                if (seen_member[ord]) {
+                                    char dup_msg[160];
+                                    snprintf(dup_msg, sizeof dup_msg, "duplicate match arm for '%s.%s'",
+                                             p->strs[c->last_enum_si].chars, p->strs[c->last_enum_mem_si].chars);
+                                    error_at(c, &pat_tok, dup_msg);
+                                }
+                                seen_member[ord] = true;
+                            }
+                            break;
+                        }
+                        ord++;
+                    }
+                }
+            } else {
+                mixed_patterns = true;
+            }
             emit(c, OP_EQ);
             if (match(c, TOK_COMMA)) {
                 int next_pat = emit_jump(c, OP_JUMP_IF_FALSE);
@@ -1371,6 +1410,40 @@ static void match_stmt(Compiler *c) {
     }
 
     consume(c, TOK_RBRACE, "expected '}' to close this match");
+    if (!c->had_error && match_enum_si >= 0 && !mixed_patterns && !saw_default) {
+        const Program *p = &c->vm->prog;
+        char missing[256];
+        size_t pos = 0;
+        int miss_count = 0;
+        int ord = 0;
+        for (int m = 0; m < p->enum_member_count; m++) {
+            if (p->enum_members[m].enum_name != (uint16_t)match_enum_si) continue;
+            if (ord < 256 && !seen_member[ord]) {
+                if (miss_count < 4 && pos + 4 < sizeof missing) {
+                    int w = snprintf(missing + pos, sizeof missing - pos, "%s%s.%s",
+                                     miss_count > 0 ? ", " : "",
+                                     p->strs[match_enum_si].chars,
+                                     p->strs[p->enum_members[m].member_name].chars);
+                    if (w > 0) pos += (size_t)w;
+                }
+                miss_count++;
+            }
+            ord++;
+        }
+        if (miss_count > 0) {
+            char msg[384];
+            if (miss_count > 4) {
+                snprintf(msg, sizeof msg,
+                         "non-exhaustive match on enum '%s': missing %s and %d more (add arms or a '_' catch-all)",
+                         p->strs[match_enum_si].chars, missing, miss_count - 4);
+            } else {
+                snprintf(msg, sizeof msg,
+                         "non-exhaustive match on enum '%s': missing %s (add arms or a '_' catch-all)",
+                         p->strs[match_enum_si].chars, missing);
+            }
+            error_at(c, &tok, msg);
+        }
+    }
     for (int i = 0; i < end_count; i++) patch_jump(c, ends[i]);
     end_scope(c);
 }

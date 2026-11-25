@@ -1,0 +1,41 @@
+// Static arrays and structs compile to .bss in native RISC-V with zero heap and full bounds checking.
+struct Point { x, y }
+
+let lut = [10, 20, 30, 40]
+let zeros = array(4)
+let ones = array(3, 7)
+let grid = [[1, 2], [3, 4]]
+let p = Point { x: 5, y: 12 }
+
+fn sum_lut() {
+    let s = 0
+    for i in 0..len(lut) {
+        s += lut[i]
+    }
+    return s
+}
+
+fn move_point(dx, dy) {
+    p.x += dx
+    p.y += dy
+}
+
+lut[2] = 35
+zeros[1] = 99
+grid[1][0] = 30
+move_point(3, -2)
+
+print(sum_lut(), len(zeros), zeros[0], zeros[1])
+print(ones[0], ones[2], grid[0][1], grid[1][0])
+print(p.x, p.y)
+
+free(lut)
+free(zeros)
+free(ones)
+free(grid[0])
+free(grid[1])
+free(grid)
+free(p)
+// expect: 105 4 0 99
+// expect: 7 7 2 30
+// expect: 8 10

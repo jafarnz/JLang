@@ -1,0 +1,225 @@
+// raycaster.jlang - fixed-point 3D corridor raycaster for Glass.
+//
+// OLED (128x64): first-person 3D corridor view rendered with Q8 fixed-point
+//                DDA raycasting (fix_mul / fix_div), with shaded side walls.
+// LEDs (32x8):   live 8x8 top-down mini-map on the left (walls + player dot),
+//                heading compass and wall proximity gauge on the right.
+// Controls:      turn the knob to look around; press the button to walk.
+
+use "display.jlang"
+
+// 64-step sine table in Q8 fixed-point (-256..256).
+let SIN64 = [
+    0, 25, 50, 74, 98, 121, 142, 162,
+    181, 198, 213, 226, 237, 245, 251, 255,
+    256, 255, 251, 245, 237, 226, 213, 198,
+    181, 162, 142, 121, 98, 74, 50, 25,
+    0, -25, -50, -74, -98, -121, -142, -162,
+    -181, -198, -213, -226, -237, -245, -251, -255,
+    -256, -255, -251, -245, -237, -226, -213, -198,
+    -181, -162, -142, -121, -98, -74, -50, -25
+]
+
+fn sin_q8(a) {
+    return SIN64[a & 63]
+}
+
+fn cos_q8(a) {
+    return SIN64[(a + 16) & 63]
+}
+
+// 8x8 corridor map (1 = wall, 0 = open space).
+let MAP = [
+    1, 1, 1, 1, 1, 1, 1, 1,
+    1, 0, 0, 0, 0, 0, 0, 1,
+    1, 0, 1, 1, 0, 1, 0, 1,
+    1, 0, 0, 0, 0, 1, 0, 1,
+    1, 0, 1, 0, 0, 0, 0, 1,
+    1, 0, 1, 0, 1, 1, 0, 1,
+    1, 0, 0, 0, 0, 0, 0, 1,
+    1, 1, 1, 1, 1, 1, 1, 1
+]
+
+fn map_at(mx, my) {
+    if mx < 0 || mx >= 8 || my < 0 || my >= 8 {
+        return 1
+    }
+    return MAP[my * 8 + mx]
+}
+
+// Player state in Q8 map coordinates (1.5, 3.5).
+let px = 384
+let py = 896
+let angle = 4
+let frame = 0
+
+fn draw_radar(center_dist) {
+    led_clear_all()
+    // 8x8 top-down mini-map on columns 0..7
+    for my in 0..8 {
+        for mx in 0..8 {
+            if map_at(mx, my) != 0 {
+                led_pixel(mx, my, 1)
+            }
+        }
+    }
+    // Blinking player dot inside the mini-map
+    if frame % 2 == 0 {
+        led_pixel(px >> 8, py >> 8, 1)
+    }
+
+    // Compass heading label on columns 10..20
+    let dir = (angle + 4) & 63
+    let c = 'E'
+    if dir >= 8 && dir < 24 {
+        c = 'S'
+    } else if dir >= 24 && dir < 40 {
+        c = 'W'
+    } else if dir >= 40 && dir < 56 {
+        c = 'N'
+    }
+    led_char_at(11, c)
+
+    // Wall proximity meter on columns 19..31
+    let prox = clamp(12 - center_dist / 80, 1, 12)
+    for i in 0..prox {
+        led_bar(19 + i, 2 + i / 2)
+    }
+}
+
+fn render_3d() {
+    fb_clear()
+    let dir_x = cos_q8(angle)
+    let dir_y = sin_q8(angle)
+    // Camera plane (66% FOV, perpendicular to heading)
+    let plane_x = fix_mul(-dir_y, 170, 8)
+    let plane_y = fix_mul(dir_x, 170, 8)
+    let center_dist = 512
+
+    // Cast 64 rays across the 128px screen (2 pixels wide per ray).
+    for col in 0..64 {
+        // cam_x in Q8 from -256 to +256
+        let cam_x = col * 8 - 256
+        let ray_x = dir_x + fix_mul(plane_x, cam_x, 8)
+        let ray_y = dir_y + fix_mul(plane_y, cam_x, 8)
+
+        let mx = px >> 8
+        let my = py >> 8
+
+        let delta_x = 16384
+        if ray_x != 0 {
+            delta_x = abs(fix_div(256, ray_x, 8))
+        }
+        let delta_y = 16384
+        if ray_y != 0 {
+            delta_y = abs(fix_div(256, ray_y, 8))
+        }
+
+        let step_x = 1
+        let side_x = 0
+        if ray_x < 0 {
+            step_x = -1
+            side_x = fix_mul(px & 255, delta_x, 8)
+        } else {
+            side_x = fix_mul(256 - (px & 255), delta_x, 8)
+        }
+
+        let step_y = 1
+        let side_y = 0
+        if ray_y < 0 {
+            step_y = -1
+            side_y = fix_mul(py & 255, delta_y, 8)
+        } else {
+            side_y = fix_mul(256 - (py & 255), delta_y, 8)
+        }
+
+        let side = 0
+        let steps = 0
+        while steps < 14 {
+            if side_x < side_y {
+                side_x += delta_x
+                mx += step_x
+                side = 0
+            } else {
+                side_y += delta_y
+                my += step_y
+                side = 1
+            }
+            if map_at(mx, my) != 0 {
+                break
+            }
+            steps += 1
+        }
+
+        let dist = side_x - delta_x
+        if side == 1 {
+            dist = side_y - delta_y
+        }
+        if dist < 24 {
+            dist = 24
+        }
+        if col == 32 {
+            center_dist = dist
+        }
+
+        let h = clamp(fix_div(64, dist, 8), 2, 62)
+        let y0 = 32 - h / 2
+        let y1 = 32 + h / 2
+        let sx = col * 2
+
+        if side == 0 {
+            // Solid bright wall
+            fb_vline(sx, y0, y1)
+            fb_vline(sx + 1, y0, y1)
+        } else {
+            // Shaded perpendicular wall: solid edges + vertical dither
+            fb_pixel(sx, y0, 1)
+            fb_pixel(sx + 1, y0, 1)
+            fb_pixel(sx, y1, 1)
+            fb_pixel(sx + 1, y1, 1)
+            let y = y0 + 1
+            while y < y1 {
+                fb_pixel(sx + (y & 1), y, 1)
+                y += 1
+            }
+        }
+        // Subtle floor dots
+        if y1 + 4 < 64 && (col & 3) == 0 {
+            fb_pixel(sx, 60, 1)
+        }
+    }
+
+    // Minimal HUD crosshair
+    fb_hline(61, 66, 32)
+    fb_vline(64, 30, 34)
+    draw_radar(center_dist)
+    led_show()
+    fb_show()
+}
+
+glass_init()
+
+while true {
+    let k = knob()
+    if k > 100 {
+        angle = (k * 64 / 4096) & 63
+    } else {
+        // Gentle auto-pan when the knob is parked at 0
+        angle = (angle + 1) & 63
+    }
+
+    if pin_read(BUTTON) == 0 || (k <= 100 && frame % 3 == 0) {
+        let nx = px + (cos_q8(angle) >> 2)
+        let ny = py + (sin_q8(angle) >> 2)
+        if map_at(nx >> 8, py >> 8) == 0 {
+            px = nx
+        }
+        if map_at(px >> 8, ny >> 8) == 0 {
+            py = ny
+        }
+    }
+
+    render_3d()
+    frame += 1
+    delay(80)
+}

@@ -1,0 +1,168 @@
+// radar.jlang - Wi-Fi 6 / BLE 5 signal radar & scanner for Glass.
+//
+// OLED (128x64): active radio band (Wi-Fi 6 or BLE 5), selected AP/beacon
+//                SSID, channel, live RSSI in dBm, and a rolling signal
+//                history sparkline buffered in a ring().
+// LEDs (32x8):   8-slot signal strength bar graph across all 32 LED columns
+//                with a sweeping scan cursor on the top row.
+// Controls:      knob selects which network/beacon to inspect; button switches
+//                between Wi-Fi 6 and BLE 5 bands.
+//
+// Note: scan frames are encoded/decoded with pack()/unpack() using a compact
+// 4-byte wire format ("u4 u4 i8 u16be": band, channel, rssi_dbm, beacon_ms)
+// so a real ESP32-C6 Wi-Fi/BLE driver can feed live packets into the same UI.
+
+use "display.jlang"
+
+enum Band { WiFi6, Ble5 }
+
+let band = Band.WiFi6
+let was_pressed = false
+let tick = 0
+let selected = 0
+
+let WIFI_SSIDS = [
+    "Lab-WiFi6", "OpenBench", "ESP32-AP", "IoT-Mesh",
+    "MakerNet", "Guest-2.4", "SensorHub", "DevRouter"
+]
+let WIFI_CH = [1, 6, 11, 3, 6, 1, 9, 11]
+let WIFI_BASE_RSSI = [-38, -52, -44, -67, -58, -74, -61, -49]
+
+let BLE_NAMES = [
+    "Glass-C6", "Iris-S3", "EnvNode-1", "HeartBand",
+    "KeyFinder", "AudioSink", "DeskLamp", "TempTag-4"
+]
+let BLE_CH = [37, 38, 39, 37, 38, 39, 37, 38]
+let BLE_BASE_RSSI = [-42, -48, -63, -71, -55, -60, -78, -51]
+
+// 4-byte wire packet buffer + rolling 24-sample RSSI history ring buffer
+let pkt = alloc(4)
+let hist = ring(24)
+
+fn synth_rssi(base, idx, t) {
+    // Deterministic gentle multipath ripple (-4..+4 dBm)
+    let wave = ((t * 3 + idx * 7) % 9) - 4
+    return clamp(base + wave, -95, -25)
+}
+
+fn rssi_to_bars(dbm) {
+    // Map -95 dBm -> 1 bar, -30 dBm -> 8 bars
+    return clamp(map(dbm, -95, -30, 1, 8), 1, 8)
+}
+
+fn band_name(b) {
+    match b {
+        Band.WiFi6 => { return "WIFI 6" }
+        Band.Ble5 => { return "BLE 5" }
+    }
+}
+
+glass_init()
+
+while true {
+    let pressed = pin_read(BUTTON) == 0
+    if pressed && !was_pressed {
+        match band {
+            Band.WiFi6 => { band = Band.Ble5 }
+            Band.Ble5 => { band = Band.WiFi6 }
+        }
+        ring_clear(hist)
+    }
+    was_pressed = pressed
+
+    let k = knob()
+    if k > 50 {
+        selected = clamp(k * 8 / 4096, 0, 7)
+    } else {
+        selected = (tick / 6) % 8
+    }
+
+    // Build live 8-slot bar graph on the 32x8 LED matrix (3px wide + 1px gap)
+    led_clear_all()
+    let sel_ch = 0
+    let sel_rssi = -90
+    let sel_name = ""
+
+    for i in 0..8 {
+        let ch = 0
+        let rssi = -90
+        let name = ""
+        match band {
+            Band.WiFi6 => {
+                ch = WIFI_CH[i]
+                rssi = synth_rssi(WIFI_BASE_RSSI[i], i, tick)
+                name = WIFI_SSIDS[i]
+            }
+            Band.Ble5 => {
+                ch = BLE_CH[i]
+                rssi = synth_rssi(BLE_BASE_RSSI[i], i, tick)
+                name = BLE_NAMES[i]
+            }
+        }
+        // Pack & unpack a compact telemetry frame (band, channel, signed RSSI, period)
+        let b_id = 0
+        if band == Band.Ble5 {
+            b_id = 1
+        }
+        pack(pkt, 0, "u4 u4 i8 u16be", b_id, ch & 15, rssi, 100)
+        let fields = unpack(pkt, 0, "u4 u4 i8 u16be")
+        let decoded_rssi = fields[2]
+        free(fields)
+
+        let h = rssi_to_bars(decoded_rssi)
+        let x0 = i * 4
+        led_bar(x0, h)
+        led_bar(x0 + 1, h)
+        if i == selected {
+            // Highlight selected channel with full 3-column bar + top marker
+            led_bar(x0 + 2, h)
+            led_pixel(x0 + 1, 0, 1)
+            sel_ch = ch
+            sel_rssi = decoded_rssi
+            sel_name = name
+        }
+    }
+
+    // Sweeping radar dot along top row
+    led_pixel((tick * 2) & 31, 0, 1)
+
+    // Record selected RSSI in ring buffer (drop oldest when full)
+    if ring_full(hist) {
+        ring_pop(hist)
+    }
+    ring_push(hist, sel_rssi)
+
+    // Draw 128x64 OLED scanner panel
+    fb_clear()
+    fb_str(0, 0, "RADAR ")
+    fb_str(36, 0, band_name(band))
+    fb_str(84, 0, "CH ")
+    fb_int(102, 0, sel_ch)
+    fb_hline(0, 127, 9)
+
+    fb_str(0, 16, sel_name)
+    let nx = fb_int(0, 24, sel_rssi)
+    fb_str(nx, 24, " dBm")
+
+    // Signal strength bar on OLED
+    let pct = clamp(map(sel_rssi, -95, -30, 0, 100), 0, 100)
+    fb_rect(64, 25, 62, 6, false)
+    fb_rect(65, 26, clamp(pct * 60 / 100, 1, 60), 4, true)
+
+    // Rolling sparkline from ring buffer
+    fb_rect(0, 36, 128, 28, false)
+    let n = len(hist)
+    // Snapshot ring contents in FIFO order by rotating through it
+    for i in 0..n {
+        let v = ring_pop(hist)
+        ring_push(hist, v)
+        let sh = clamp(map(v, -95, -30, 2, 24), 2, 24)
+        let sx = 4 + i * 5
+        fb_rect(sx, 62 - sh, 3, sh, true)
+    }
+
+    led_show()
+    fb_show()
+    tick += 1
+    delay(120)
+}

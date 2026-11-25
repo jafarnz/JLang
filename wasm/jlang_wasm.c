@@ -207,6 +207,17 @@ static size_t show(JlVM *vm, Value v, char *out, size_t size, int depth) {
         else ADD("<freed buf>");
         break;
     }
+    case VAL_RING: {
+        uint8_t *d;
+        uint32_t len;
+        if (heap_get(&vm->heap, v.as.ref, &d, &len) == HEAP_OK) {
+            const RingHeader *rh = (const RingHeader *)(const void *)d;
+            ADD("ring #%u (%u/%u)", (unsigned)v.as.ref.handle, (unsigned)rh->count, (unsigned)rh->cap);
+        } else {
+            ADD("<freed ring>");
+        }
+        break;
+    }
     case VAL_ARR:
     case VAL_STRUCT: {
         Value *items;

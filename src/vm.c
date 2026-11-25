@@ -454,6 +454,19 @@ static void print_value(JlVM *vm, Value v, bool to_err, int depth) {
         vm_write(vm, to_err, buf, (size_t)n);
         return;
     }
+    case VAL_RING: {
+        uint8_t *d;
+        uint32_t len;
+        int n;
+        if (heap_get(&vm->heap, v.as.ref, &d, &len) == HEAP_OK && len >= sizeof(RingHeader)) {
+            const RingHeader *rh = (const RingHeader *)(const void *)d;
+            n = snprintf(buf, sizeof buf, "<ring %u/%u>", (unsigned)rh->count, (unsigned)rh->cap);
+        } else {
+            n = snprintf(buf, sizeof buf, "<freed ring>");
+        }
+        vm_write(vm, to_err, buf, (size_t)n);
+        return;
+    }
     case VAL_FN:
     case VAL_NATIVE: {
         /* Names can be any length, so write them directly rather than
@@ -492,6 +505,7 @@ static int values_equal(JlVM *vm, Value a, Value b) {
     case VAL_BUF:
     case VAL_ARR:
     case VAL_STRUCT:
+    case VAL_RING:
         return a.as.ref.handle == b.as.ref.handle && a.as.ref.gen == b.as.ref.gen;
     case VAL_STR: {
         const char *sa, *sb;
@@ -1334,15 +1348,21 @@ JlResult jl_disassemble_or_check(JlVM *vm, const char *source, bool print) {
 
 /* Marks the block v refers to, and everything an array holds, as reachable. */
 static void mark(JlVM *vm, Value v, uint8_t *seen) {
-    if ((v.type != VAL_BUF && v.type != VAL_ARR && v.type != VAL_STRUCT && !(v.type == VAL_STR && v.on_heap)) ||
+    if ((v.type != VAL_BUF && v.type != VAL_ARR && v.type != VAL_STRUCT && v.type != VAL_RING &&
+         !(v.type == VAL_STR && v.on_heap)) ||
         v.as.ref.handle >= vm->heap.handle_cap || seen[v.as.ref.handle])
         return;
     uint8_t *data;
     uint32_t len;
     if (heap_get(&vm->heap, v.as.ref, &data, &len) != HEAP_OK) return;
     seen[v.as.ref.handle] = 1;
-    if (v.type == VAL_ARR || v.type == VAL_STRUCT)
+    if (v.type == VAL_ARR || v.type == VAL_STRUCT) {
         for (uint32_t i = 0; i < len / (uint32_t)sizeof(Value); i++) mark(vm, ((Value *)(void *)data)[i], seen);
+    } else if (v.type == VAL_RING && len >= sizeof(RingHeader)) {
+        const RingHeader *rh = (const RingHeader *)(const void *)data;
+        const Value *items = (const Value *)(const void *)(data + sizeof(RingHeader));
+        for (uint32_t i = 0; i < rh->count; i++) mark(vm, items[(rh->head + i) % rh->cap], seen);
+    }
 }
 
 /*

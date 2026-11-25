@@ -28,11 +28,22 @@ fn mode_code(m) {
     }
 }
 
+enum Color { RED, GREEN, BLUE }
+fn color_id(c) {
+    match c {
+        Color.RED => { return 10 }
+        Color.GREEN, Color.BLUE => { return 20 }
+    }
+    return 0
+}
+
 print(Mode.BUS, Mode.STUDY, Mode.ASK, Mode.QUIET)
 print(Mode.NEG, Mode.AFTER_NEG)
 print(Reg.CTRL, Reg.STATUS, Reg.COPY, Reg.FROM_CONST, DEFAULT_MODE)
 print(mode_code(Mode.BUS), mode_code(DEFAULT_MODE), mode_code(Mode.ASK), mode_code(99))
+print(color_id(Color.RED), color_id(Color.BLUE))
 // expect: 0 1 10 11
 // expect: -2 -1
 // expect: 0 4 10 100 1
 // expect: 1 2 3 0
+// expect: 10 20

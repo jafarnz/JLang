@@ -2,5 +2,5 @@ Worst case of each part of the program, at 160 MHz, in the pipeline model of
 jlang emu --pipeline. A real chip adds caches, interrupts and its board functions.
 
 the script       at most 115 cycles = 0.72 us, plus printing, jl_hal_putc and jl_hal_pin_mode
-on press         at most 508 cycles = 3.17 us, plus printing, jl_hal_putc and jl_hal_pin_write
+on press         at most 447 cycles = 2.79 us, plus printing, jl_hal_putc and jl_hal_pin_write
 on tick          no limit: the loop at line 16 can run any number of times (only loops like for i in 0..8 have a known count)

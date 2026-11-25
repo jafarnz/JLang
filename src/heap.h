@@ -25,9 +25,17 @@
 
 #include "value.h"
 
-enum { BLOCK_BUF = 0, BLOCK_STR = 1, BLOCK_ARR = 2, BLOCK_STRUCT = 3 };
+enum { BLOCK_BUF = 0, BLOCK_STR = 1, BLOCK_ARR = 2, BLOCK_STRUCT = 3, BLOCK_RING = 4 };
 
-/* "buf", "str" or "array" */
+/* 16-byte header at the start of a BLOCK_RING payload, followed by cap Values. */
+typedef struct {
+    uint32_t cap;
+    uint32_t head;
+    uint32_t count;
+    uint32_t pad;
+} RingHeader;
+
+/* "buf", "str", "array", "struct" or "ring" */
 const char *heap_kind_name(uint8_t kind);
 
 typedef struct {

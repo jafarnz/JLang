@@ -25,7 +25,8 @@ static bool get_buf(JlVM *vm, const char *fn, int arg_no, Value v,
 
 /* Printing freed memory is a use-after-free like any other access. */
 static bool check_alive(JlVM *vm, Value v) {
-    if (v.type != VAL_BUF && v.type != VAL_ARR && v.type != VAL_STRUCT && !(v.type == VAL_STR && v.on_heap)) return true;
+    if (v.type != VAL_BUF && v.type != VAL_ARR && v.type != VAL_STRUCT && v.type != VAL_RING &&
+        !(v.type == VAL_STR && v.on_heap)) return true;
     uint8_t *d;
     uint32_t n;
     if (heap_get(&vm->heap, v.as.ref, &d, &n) == HEAP_OK) return true;
@@ -203,8 +204,9 @@ static bool bi_free(JlVM *vm, int argc, Value *args, Value *out) {
     if (v.type == VAL_STR && !v.on_heap) {
         return jl_error(vm, "free(): string literals are not on the heap and can't be freed");
     }
-    if (v.type != VAL_BUF && v.type != VAL_STR && v.type != VAL_ARR && v.type != VAL_STRUCT) {
-        return jl_error(vm, "free() expects a buf, an array, a struct or a heap string, got %s",
+    if (v.type != VAL_BUF && v.type != VAL_STR && v.type != VAL_ARR && v.type != VAL_STRUCT &&
+        v.type != VAL_RING) {
+        return jl_error(vm, "free() expects a buf, an array, a struct, a ring or a heap string, got %s",
                         value_type_name(v));
     }
     HeapStatus st = heap_release(&vm->heap, v.as.ref, (uint32_t)vm_current_line(vm));
@@ -242,7 +244,16 @@ static bool bi_len(JlVM *vm, int argc, Value *args, Value *out) {
         *out = int_val((int32_t)n);
         return true;
     }
-    return jl_error(vm, "len() expects a buf, str or array, got %s", value_type_name(v));
+    if (v.type == VAL_RING) {
+        uint8_t *d;
+        uint32_t len;
+        if (heap_get(&vm->heap, v.as.ref, &d, &len) != HEAP_OK || len < sizeof(RingHeader)) {
+            return vm_freed_error(vm, v.as.ref, "ring");
+        }
+        *out = int_val((int32_t)((const RingHeader *)(const void *)d)->count);
+        return true;
+    }
+    return jl_error(vm, "len() expects a buf, str, array or ring, got %s", value_type_name(v));
 }
 
 /* read16/read32/write16/write32: multi-byte values, little-endian
@@ -699,6 +710,343 @@ static bool bi_fix_div(JlVM *vm, int argc, Value *args, Value *out) {
     return true;
 }
 
+/* ---- fixed-capacity ring buffers ---------------------------------- */
+
+static bool get_ring(JlVM *vm, const char *fn, Value v, RingHeader **hdr, Value **items) {
+    if (v.type != VAL_RING) {
+        return jl_error(vm, "%s(): argument 1 must be a ring, got %s", fn, value_type_name(v));
+    }
+    uint8_t *data;
+    uint32_t len;
+    if (heap_get(&vm->heap, v.as.ref, &data, &len) != HEAP_OK || len < sizeof(RingHeader)) {
+        return vm_freed_error(vm, v.as.ref, "ring");
+    }
+    *hdr = (RingHeader *)(void *)data;
+    *items = (Value *)(void *)(data + sizeof(RingHeader));
+    return true;
+}
+
+static bool bi_ring(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    int32_t cap;
+    if (!jl_get_int(vm, "ring", 1, args[0], &cap)) return false;
+    if (cap < 1 || cap > 4096) {
+        return jl_error(vm, "ring(): capacity must be 1..4096, got %d", (int)cap);
+    }
+    uint32_t bytes = (uint32_t)sizeof(RingHeader) + (uint32_t)cap * (uint32_t)sizeof(Value);
+    HeapRef ref;
+    HeapStatus st = heap_alloc(&vm->heap, bytes, BLOCK_RING, (uint32_t)vm_current_line(vm), &ref);
+    if (st == HEAP_NO_HANDLES) {
+        return jl_error(vm, "ring(): too many live blocks (max %u). Are you forgetting to free()?",
+                        vm->heap.handle_cap);
+    }
+    if (st != HEAP_OK) {
+        return jl_error(vm, "out of memory: ring(%d) needed %u bytes, largest free block is %u bytes",
+                        (int)cap, (unsigned)bytes, (unsigned)heap_largest_free(&vm->heap));
+    }
+    uint8_t *data;
+    uint32_t len;
+    heap_get(&vm->heap, ref, &data, &len);
+    RingHeader *rh = (RingHeader *)(void *)data;
+    rh->cap = (uint32_t)cap;
+    rh->head = 0;
+    rh->count = 0;
+    rh->pad = 0;
+    *out = ring_val(ref);
+    return true;
+}
+
+static bool bi_ring_push(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    RingHeader *rh = NULL;
+    Value *items = NULL;
+    if (!get_ring(vm, "ring_push", args[0], &rh, &items)) return false;
+    if (rh->count >= rh->cap) {
+        *out = bool_val(false);
+        return true;
+    }
+    uint32_t tail = (rh->head + rh->count) % rh->cap;
+    items[tail] = args[1];
+    rh->count++;
+    *out = bool_val(true);
+    return true;
+}
+
+static bool bi_ring_pop(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    RingHeader *rh = NULL;
+    Value *items = NULL;
+    if (!get_ring(vm, "ring_pop", args[0], &rh, &items)) return false;
+    if (rh->count == 0) {
+        *out = nil_val();
+        return true;
+    }
+    *out = items[rh->head];
+    items[rh->head] = nil_val();
+    rh->head = (rh->head + 1u) % rh->cap;
+    rh->count--;
+    return true;
+}
+
+static bool bi_ring_peek(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    RingHeader *rh = NULL;
+    Value *items = NULL;
+    if (!get_ring(vm, "ring_peek", args[0], &rh, &items)) return false;
+    *out = rh->count == 0 ? nil_val() : items[rh->head];
+    return true;
+}
+
+static bool bi_ring_full(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    RingHeader *rh = NULL;
+    Value *items = NULL;
+    if (!get_ring(vm, "ring_full", args[0], &rh, &items)) return false;
+    *out = bool_val(rh->count >= rh->cap);
+    return true;
+}
+
+static bool bi_ring_empty(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    RingHeader *rh = NULL;
+    Value *items = NULL;
+    if (!get_ring(vm, "ring_empty", args[0], &rh, &items)) return false;
+    *out = bool_val(rh->count == 0);
+    return true;
+}
+
+static bool bi_ring_cap(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    RingHeader *rh = NULL;
+    Value *items = NULL;
+    if (!get_ring(vm, "ring_cap", args[0], &rh, &items)) return false;
+    *out = int_val((int32_t)rh->cap);
+    return true;
+}
+
+static bool bi_ring_clear(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    (void)out;
+    RingHeader *rh = NULL;
+    Value *items = NULL;
+    if (!get_ring(vm, "ring_clear", args[0], &rh, &items)) return false;
+    for (uint32_t i = 0; i < rh->count; i++) items[(rh->head + i) % rh->cap] = nil_val();
+    rh->head = 0;
+    rh->count = 0;
+    return true;
+}
+
+/* ---- declarative wire-format bit-packing (pack / unpack) ---------- */
+
+#define PACK_FIELDS_MAX 64
+
+typedef struct {
+    uint8_t bits;     /* 1..32 */
+    bool is_signed;
+    bool is_pad;
+    bool little_endian;
+} PackField;
+
+static bool parse_pack_fmt(JlVM *vm, const char *fn, const char *fmt, uint32_t flen,
+                           PackField *fields, int *field_count, int *value_count, uint32_t *total_bits) {
+    int nf = 0, nv = 0;
+    uint32_t bits = 0;
+    uint32_t i = 0;
+    while (i < flen) {
+        while (i < flen && (fmt[i] == ' ' || fmt[i] == '\t' || fmt[i] == '\n' || fmt[i] == '\r' || fmt[i] == ',')) i++;
+        if (i >= flen) break;
+        uint32_t start = i;
+        while (i < flen && fmt[i] != ' ' && fmt[i] != '\t' && fmt[i] != '\n' && fmt[i] != '\r' && fmt[i] != ',') i++;
+        uint32_t tlen = i - start;
+        const char *tok = fmt + start;
+        if (nf >= PACK_FIELDS_MAX) {
+            return jl_error(vm, "%s(): too many fields in format (max %d)", fn, PACK_FIELDS_MAX);
+        }
+        PackField f;
+        memset(&f, 0, sizeof f);
+        uint32_t p = 0;
+        if (tlen >= 4 && memcmp(tok, "pad", 3) == 0) {
+            f.is_pad = true;
+            p = 3;
+        } else if (tlen >= 2 && (tok[0] == 'u' || tok[0] == 'i')) {
+            f.is_signed = tok[0] == 'i';
+            p = 1;
+        } else {
+            return jl_error(vm, "%s(): unknown field '%.*s' (use u<bits>, i<bits>, u16be, i16le, pad<bits>)",
+                            fn, (int)tlen, tok);
+        }
+        int w = 0;
+        uint32_t dstart = p;
+        while (p < tlen && tok[p] >= '0' && tok[p] <= '9') {
+            w = w * 10 + (tok[p] - '0');
+            p++;
+            if (w > 32) break;
+        }
+        if (p == dstart || w < 1 || w > 32) {
+            return jl_error(vm, "%s(): bit width in '%.*s' must be 1..32", fn, (int)tlen, tok);
+        }
+        f.bits = (uint8_t)w;
+        if (p < tlen) {
+            if (f.is_pad) {
+                return jl_error(vm, "%s(): bad padding field '%.*s'", fn, (int)tlen, tok);
+            }
+            if (tlen - p == 2 && tok[p] == 'b' && tok[p + 1] == 'e') {
+                f.little_endian = false;
+            } else if (tlen - p == 2 && tok[p] == 'l' && tok[p + 1] == 'e') {
+                if ((bits % 8u) != 0 || (w != 16 && w != 24 && w != 32)) {
+                    return jl_error(vm, "%s(): '%.*s' little-endian field must be 16, 24 or 32 bits and byte-aligned",
+                                    fn, (int)tlen, tok);
+                }
+                f.little_endian = true;
+            } else {
+                return jl_error(vm, "%s(): unknown suffix in '%.*s' (use be or le)", fn, (int)tlen, tok);
+            }
+        }
+        fields[nf++] = f;
+        if (!f.is_pad) nv++;
+        bits += (uint32_t)w;
+    }
+    if (nf == 0) return jl_error(vm, "%s(): format string can't be empty", fn);
+    *field_count = nf;
+    *value_count = nv;
+    *total_bits = bits;
+    return true;
+}
+
+static bool bi_pack(JlVM *vm, int argc, Value *args, Value *out) {
+    if (argc < 3) return jl_error(vm, "pack(): expected (buf, offset, format, values...)");
+    uint8_t *data;
+    uint32_t blen;
+    int32_t off;
+    const char *fmt;
+    uint32_t flen;
+    if (!get_buf(vm, "pack", 1, args[0], &data, &blen)) return false;
+    if (!jl_get_int(vm, "pack", 2, args[1], &off)) return false;
+    if (args[2].type != VAL_STR) return jl_error(vm, "pack(): argument 3 must be a format string");
+    if (!jl_get_string(vm, args[2], &fmt, &flen)) return vm_freed_error(vm, args[2].as.ref, "str");
+
+    PackField fields[PACK_FIELDS_MAX];
+    int nf = 0, nv = 0;
+    uint32_t total_bits = 0;
+    if (!parse_pack_fmt(vm, "pack", fmt, flen, fields, &nf, &nv, &total_bits)) return false;
+    if (argc - 3 != nv) {
+        return jl_error(vm, "pack(): format expects %d value(s) but got %d", nv, argc - 3);
+    }
+    uint32_t total_bytes = (total_bits + 7u) / 8u;
+    if (off < 0 || (uint32_t)off + total_bytes > blen) {
+        return jl_error(vm, "pack(): needs %u byte(s) at offset %d, but buf has %u byte(s)",
+                        (unsigned)total_bytes, (int)off, (unsigned)blen);
+    }
+    /* Validate all values before mutating the buffer. */
+    int32_t vals[PACK_FIELDS_MAX];
+    int vi = 0;
+    for (int f = 0; f < nf; f++) {
+        if (fields[f].is_pad) continue;
+        int32_t v;
+        if (!jl_get_int(vm, "pack", 4 + vi, args[3 + vi], &v)) return false;
+        uint8_t w = fields[f].bits;
+        if (fields[f].is_signed) {
+            if (w < 32) {
+                int32_t lo = -(int32_t)(1u << (w - 1u));
+                int32_t hi = (int32_t)((1u << (w - 1u)) - 1u);
+                if (v < lo || v > hi) {
+                    return jl_error(vm, "pack(): value %d doesn't fit in i%u (%d..%d)",
+                                    (int)v, (unsigned)w, (int)lo, (int)hi);
+                }
+            }
+        } else if (w < 32) {
+            uint32_t hi = (1u << w) - 1u;
+            if (v < 0 || (uint32_t)v > hi) {
+                return jl_error(vm, "pack(): value %d doesn't fit in u%u (0..%u)",
+                                (int)v, (unsigned)w, (unsigned)hi);
+            }
+        }
+        vals[vi++] = v;
+    }
+    memset(data + off, 0, total_bytes);
+    uint32_t bit_pos = 0;
+    vi = 0;
+    for (int f = 0; f < nf; f++) {
+        uint8_t w = fields[f].bits;
+        if (fields[f].is_pad) {
+            bit_pos += w;
+            continue;
+        }
+        uint32_t u = (uint32_t)vals[vi++];
+        if (fields[f].little_endian) {
+            uint32_t byte_at = (uint32_t)off + bit_pos / 8u;
+            for (uint32_t b = 0; b < (uint32_t)w / 8u; b++) {
+                data[byte_at + b] = (uint8_t)((u >> (b * 8u)) & 0xFFu);
+            }
+            bit_pos += w;
+        } else {
+            for (int b = (int)w - 1; b >= 0; b--) {
+                if ((u >> b) & 1u) {
+                    data[(uint32_t)off + bit_pos / 8u] |= (uint8_t)(1u << (7u - (bit_pos % 8u)));
+                }
+                bit_pos++;
+            }
+        }
+    }
+    *out = int_val((int32_t)total_bytes);
+    return true;
+}
+
+static bool bi_unpack(JlVM *vm, int argc, Value *args, Value *out) {
+    (void)argc;
+    uint8_t *data;
+    uint32_t blen;
+    int32_t off;
+    const char *fmt;
+    uint32_t flen;
+    if (!get_buf(vm, "unpack", 1, args[0], &data, &blen)) return false;
+    if (!jl_get_int(vm, "unpack", 2, args[1], &off)) return false;
+    if (args[2].type != VAL_STR) return jl_error(vm, "unpack(): argument 3 must be a format string");
+    if (!jl_get_string(vm, args[2], &fmt, &flen)) return vm_freed_error(vm, args[2].as.ref, "str");
+
+    PackField fields[PACK_FIELDS_MAX];
+    int nf = 0, nv = 0;
+    uint32_t total_bits = 0;
+    if (!parse_pack_fmt(vm, "unpack", fmt, flen, fields, &nf, &nv, &total_bits)) return false;
+    uint32_t total_bytes = (total_bits + 7u) / 8u;
+    if (off < 0 || (uint32_t)off + total_bytes > blen) {
+        return jl_error(vm, "unpack(): needs %u byte(s) at offset %d, but buf has %u byte(s)",
+                        (unsigned)total_bytes, (int)off, (unsigned)blen);
+    }
+    Value *items;
+    if (!jl_new_array(vm, (uint32_t)nv, out, &items)) return false;
+    /* Re-fetch buf pointer after heap allocation in case heap state changed. */
+    if (!get_buf(vm, "unpack", 1, args[0], &data, &blen)) return false;
+    uint32_t bit_pos = 0;
+    int vi = 0;
+    for (int f = 0; f < nf; f++) {
+        uint8_t w = fields[f].bits;
+        if (fields[f].is_pad) {
+            bit_pos += w;
+            continue;
+        }
+        uint32_t u = 0;
+        if (fields[f].little_endian) {
+            uint32_t byte_at = (uint32_t)off + bit_pos / 8u;
+            for (uint32_t b = 0; b < (uint32_t)w / 8u; b++) {
+                u |= ((uint32_t)data[byte_at + b]) << (b * 8u);
+            }
+            bit_pos += w;
+        } else {
+            for (int b = 0; b < (int)w; b++) {
+                uint32_t bit = (data[(uint32_t)off + bit_pos / 8u] >> (7u - (bit_pos % 8u))) & 1u;
+                u = (u << 1) | bit;
+                bit_pos++;
+            }
+        }
+        if (fields[f].is_signed && w < 32 && (u & (1u << (w - 1u))) != 0) {
+            u |= (~0u << w);
+        }
+        items[vi++] = int_val((int32_t)u);
+    }
+    return true;
+}
+
 static bool bi_asm(JlVM *vm, int argc, Value *args, Value *out) {
     (void)argc;
     (void)args;
@@ -718,9 +1066,19 @@ void jl_register_core(JlVM *vm) {
     jl_register_native(vm, "read32", bi_read32, 2);
     jl_register_native(vm, "write16", bi_write16, 3);
     jl_register_native(vm, "write32", bi_write32, 3);
+    jl_register_native(vm, "pack", bi_pack, -1);
+    jl_register_native(vm, "unpack", bi_unpack, 3);
     jl_register_native(vm, "mem", bi_mem, 0);
     jl_register_native(vm, "memmap", bi_memmap, 0);
     jl_register_native(vm, "compact", bi_compact, 0);
+    jl_register_native(vm, "ring", bi_ring, 1);
+    jl_register_native(vm, "ring_push", bi_ring_push, 2);
+    jl_register_native(vm, "ring_pop", bi_ring_pop, 1);
+    jl_register_native(vm, "ring_peek", bi_ring_peek, 1);
+    jl_register_native(vm, "ring_full", bi_ring_full, 1);
+    jl_register_native(vm, "ring_empty", bi_ring_empty, 1);
+    jl_register_native(vm, "ring_cap", bi_ring_cap, 1);
+    jl_register_native(vm, "ring_clear", bi_ring_clear, 1);
     jl_register_native(vm, "u8", bi_u8, 1);
     jl_register_native(vm, "i8", bi_i8, 1);
     jl_register_native(vm, "u16", bi_u16, 1);

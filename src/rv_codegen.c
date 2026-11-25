@@ -31,23 +31,25 @@
 #include "hw.h"
 #include "rv_codegen.h"
 
-enum { K_INT, K_BOOL, K_NIL, K_STR, K_FN, K_NATIVE };
+enum { K_INT, K_BOOL, K_NIL, K_STR, K_FN, K_NATIVE, K_ARR, K_STRUCT };
 
 typedef struct {
     uint8_t kind;
-    uint16_t index; /* string, function or built-in index */
+    uint16_t index; /* string, function, built-in, or struct type index (K_ARR: 1 = nested arrays) */
 } Kind;
 
 #define MAX_DEPTH 600
 #define DYNAMIC 0xFFFF /* kind index when the exact string or function isn't known */
 
-enum { V_MEM = 0, V_REG = 1, V_IMM = 2 };
+enum { V_MEM = 0, V_REG = 1, V_IMM = 2, V_SREG = 3 };
 
 typedef struct {
     uint8_t loc;
     uint8_t reg;
     int32_t imm;
 } VSlot;
+
+#define PROMO_COUNT 6
 
 typedef struct {
     JlVM *vm;
@@ -71,6 +73,9 @@ typedef struct {
     char **lits;
     uint32_t *lit_lens;
     int nlits;
+    /* static .bss buffers for top-level arrays and structs */
+    uint32_t *static_words;
+    int nstatics;
     /* event handlers: name -> function */
     struct {
         char name[32];
@@ -81,11 +86,12 @@ typedef struct {
     /* current function */
     int fn;
     int line;
+    int n_promo; /* promoted local slots 1..n_promo kept in s2..s7 */
     Kind kinds[MAX_DEPTH];
     VSlot vstack[MAX_DEPTH];
     int depth;
     int mem_depth; /* [0..mem_depth) live in memory at s0..s1; [mem_depth..depth) cached */
-    uint8_t reg_used; /* bitmask over REGS[0..6] */
+    uint8_t reg_used; /* bitmask over CACHE_REGS[0..6] */
 } Gen;
 
 /* ------------------------------------------------------------------ */
@@ -189,7 +195,17 @@ static Kind kind_of(uint8_t kind) {
 static Kind top(Gen *g, int n);
 static Kind certain_int(void) { return (Kind){K_INT, CERTAIN}; }
 
-static bool not_a_number(Kind k) { return k.kind == K_BOOL || k.kind == K_NIL || k.kind == K_STR || k.kind == K_FN; }
+static int add_static(Gen *g, uint32_t words) {
+    if (words == 0) words = 1;
+    g->static_words = jl_xrealloc(g->static_words, (size_t)(g->nstatics + 1) * sizeof(uint32_t));
+    g->static_words[g->nstatics] = words;
+    return g->nstatics++;
+}
+
+static bool not_a_number(Kind k) {
+    return k.kind == K_BOOL || k.kind == K_NIL || k.kind == K_STR || k.kind == K_FN ||
+           k.kind == K_ARR || k.kind == K_STRUCT;
+}
 
 static const char *kind_name(Kind k) {
     switch (k.kind) {
@@ -198,6 +214,8 @@ static const char *kind_name(Kind k) {
     case K_STR: return "str";
     case K_FN: return "fn";
     case K_NATIVE: return "built-in";
+    case K_ARR: return "array";
+    case K_STRUCT: return "struct";
     default: return "int";
     }
 }
@@ -229,25 +247,37 @@ static void pop_kinds(Gen *g, int n) {
 
 static const char *const CACHE_REGS[7] = {"t3", "t4", "t5", "t6", "a5", "a6", "a7"};
 #define CACHE_COUNT 7
+static const char *const PROMO_REGS[PROMO_COUNT] = {"s2", "s3", "s4", "s5", "s6", "s7"};
 
 static void free_reg(Gen *g, int r) {
     if (r >= 0 && r < CACHE_COUNT) g->reg_used &= (uint8_t)~(1u << r);
 }
 
-/* Flush cached slots [g->mem_depth .. target) to the memory value stack (s1). */
+/* Flush cached slots [g->mem_depth .. target) to the memory value stack (s1).
+ * Any slot in [1 .. g->n_promo] is also copied into its promoted s2..s7 register. */
 static void spill_to(Gen *g, int target) {
     if (target > g->depth) target = g->depth;
     if (target <= g->mem_depth) return;
     int n = target - g->mem_depth;
     for (int i = 0; i < n; i++) {
-        VSlot *v = &g->vstack[g->mem_depth + i];
+        int slot_idx = g->mem_depth + i;
+        VSlot *v = &g->vstack[slot_idx];
         int off = 4 * i;
+        bool promo = slot_idx >= 1 && slot_idx <= g->n_promo;
+        const char *preg = promo ? PROMO_REGS[slot_idx - 1] : NULL;
         if (v->loc == V_REG) {
             out(g, "    sw %s, %d(s1)\n", CACHE_REGS[v->reg], off);
+            if (promo) out(g, "    mv %s, %s\n", preg, CACHE_REGS[v->reg]);
             free_reg(g, v->reg);
+        } else if (v->loc == V_SREG) {
+            out(g, "    sw %s, %d(s1)\n", PROMO_REGS[v->reg], off);
+            if (promo && slot_idx - 1 != (int)v->reg) out(g, "    mv %s, %s\n", preg, PROMO_REGS[v->reg]);
         } else if (v->loc == V_IMM) {
             if (v->imm == 0) {
                 out(g, "    sw zero, %d(s1)\n", off);
+                if (promo) out(g, "    li %s, 0\n", preg);
+            } else if (promo) {
+                out(g, "    li %s, %d\n    sw %s, %d(s1)\n", preg, (int)v->imm, preg, off);
             } else {
                 out(g, "    li t0, %d\n    sw t0, %d(s1)\n", (int)v->imm, off);
             }
@@ -294,6 +324,18 @@ static void vpush_reg(Gen *g, int reg, Kind k) {
     g->depth++;
 }
 
+static void vpush_sreg(Gen *g, int sreg, Kind k) {
+    if (g->depth >= MAX_DEPTH) {
+        error(g, "expression is too deep for native code");
+        return;
+    }
+    g->kinds[g->depth] = k;
+    g->vstack[g->depth].loc = V_SREG;
+    g->vstack[g->depth].reg = (uint8_t)sreg;
+    g->vstack[g->depth].imm = 0;
+    g->depth++;
+}
+
 static void vpush_imm(Gen *g, int32_t imm, Kind k) {
     if (g->depth >= MAX_DEPTH) {
         error(g, "expression is too deep for native code");
@@ -317,6 +359,29 @@ static void vpush_mem(Gen *g, Kind k) {
     g->mem_depth = g->depth;
 }
 
+/* Keep promoted register s2..s7 synced when an op writes a result onto s1. */
+static void sync_promo_at(Gen *g, int slot_idx, int s1_off) {
+    if (slot_idx >= 1 && slot_idx <= g->n_promo) {
+        out(g, "    lw %s, %d(s1)\n", PROMO_REGS[slot_idx - 1], s1_off);
+    }
+}
+
+static void sync_promo_top(Gen *g) { sync_promo_at(g, g->depth - 1, -4); }
+
+/* Before mutating promoted register `sreg`, detach any cached stack entries
+ * referencing `sreg` so earlier pushed operands keep their old value. */
+static void materialize_sreg(Gen *g, int sreg, int limit) {
+    for (int i = g->mem_depth; i < limit; i++) {
+        if (g->vstack[i].loc == V_SREG && g->vstack[i].reg == (uint8_t)sreg) {
+            int r = alloc_reg(g);
+            if (i < g->mem_depth) continue; /* alloc_reg spilled i already */
+            out(g, "    mv %s, %s\n", CACHE_REGS[r], PROMO_REGS[sreg]);
+            g->vstack[i].loc = V_REG;
+            g->vstack[i].reg = (uint8_t)r;
+        }
+    }
+}
+
 /* Pop top slot into a register without freeing its cache reg yet (caller frees *used_reg). */
 static const char *vpop_reg(Gen *g, const char *scratch, int *used_reg) {
     *used_reg = -1;
@@ -325,6 +390,9 @@ static const char *vpop_reg(Gen *g, const char *scratch, int *used_reg) {
     if (v.loc == V_REG) {
         *used_reg = v.reg;
         return CACHE_REGS[v.reg];
+    }
+    if (v.loc == V_SREG) {
+        return PROMO_REGS[v.reg];
     }
     if (v.loc == V_IMM) {
         if (v.imm == 0) return "zero";
@@ -357,6 +425,7 @@ static const char *vpeek_reg(Gen *g, const char *scratch) {
     if (g->depth <= 0) return "zero";
     VSlot v = g->vstack[g->depth - 1];
     if (v.loc == V_REG) return CACHE_REGS[v.reg];
+    if (v.loc == V_SREG) return PROMO_REGS[v.reg];
     if (v.loc == V_IMM) {
         if (v.imm == 0) return "zero";
         out(g, "    li %s, %d\n", scratch, (int)v.imm);
@@ -398,11 +467,13 @@ static void emit_cond_branch(Gen *g, const char *bop, const char *inv_bop,
     }
 }
 
-/* Can a variable hold both? Strings and functions must stay strings and
- * functions, because print() and calls depend on knowing which they are. */
+/* Can a variable hold both? Strings, functions, arrays and structs must keep
+ * their kind, because print(), indexing, field access and calls depend on it. */
 static bool same_storage(Kind a, Kind b) {
     /* bools are 0 and 1 in native code, so print() needs to know them too */
     if ((a.kind == K_BOOL) != (b.kind == K_BOOL)) return false;
+    if ((a.kind == K_STRUCT) || (b.kind == K_STRUCT)) return a.kind == b.kind && a.index == b.index;
+    if ((a.kind == K_ARR) || (b.kind == K_ARR)) return a.kind == b.kind;
     bool sa = a.kind == K_STR || a.kind == K_FN || a.kind == K_NATIVE;
     bool sb = b.kind == K_STR || b.kind == K_FN || b.kind == K_NATIVE;
     if (!sa && !sb) return true;
@@ -412,6 +483,7 @@ static bool same_storage(Kind a, Kind b) {
 static Kind merge(Kind a, Kind b) {
     if (a.kind == b.kind && a.index == b.index) return a;
     if (a.kind == b.kind && (a.kind == K_STR || a.kind == K_FN)) return (Kind){a.kind, DYNAMIC};
+    if (a.kind == K_ARR && b.kind == K_ARR) return a;
     return kind_of(K_INT);
 }
 
@@ -440,6 +512,12 @@ static void print_value(Gen *g, Kind k, int off) {
         break;
     case K_NIL:
         out(g, "    la a0, jl_lit_%d\n    call jl_rt_puts\n", msg(g, "nil"));
+        break;
+    case K_ARR:
+        error(g, "printing whole arrays isn't available in native code yet; print their elements instead");
+        break;
+    case K_STRUCT:
+        error(g, "printing whole structs isn't available in native code yet; print their fields instead");
         break;
     case K_FN: {
         char s[80];
@@ -750,10 +828,18 @@ static void gen_native_call(Gen *g, int native, int argc) {
         out(g, "    addi s1, s1, -4\n    call jl_fn_%d\n", fn);
         pop_kinds(g, argc + 1);
         push_kind(g, kind_of(K_NIL));
+        sync_promo_top(g);
         return;
+    } else if (strcmp(name, "len") == 0 && top(g, 0).kind == K_ARR) {
+        out(g, "    lw a0, %d(s1)\n    lw a0, 0(a0)\n", arg_off(argc, 0));
+        result_in_a0 = true;
+    } else if (strcmp(name, "free") == 0 && (top(g, 0).kind == K_ARR || top(g, 0).kind == K_STRUCT)) {
+        /* Static .bss arrays and structs need no runtime free; allow free() for VM parity. */
+        nil_result = true;
     } else {
         static const char *heap_fns[] = {"alloc", "free", "len", "read16", "read32", "write16", "write32",
-                                         "mem", "memmap", "capture", "record", "ask", "speak",
+                                         "mem", "memmap", "compact", "ring", "pack", "unpack",
+                                         "capture", "record", "record_start", "record_stop", "ask", "speak",
                                          "slice", "trim", "kv_get", "kv_set", "kv_del", NULL};
         bool heap = false;
         for (int i = 0; heap_fns[i]; i++) heap |= strcmp(name, heap_fns[i]) == 0;
@@ -771,6 +857,7 @@ static void gen_native_call(Gen *g, int native, int argc) {
     else if (nil_result) out(g, "    sw zero, -4(s1)\n");
     pop_kinds(g, argc + 1);
     push_kind(g, nil_result ? kind_of(K_NIL) : result);
+    sync_promo_top(g);
 }
 
 /* ------------------------------------------------------------------ */
@@ -902,22 +989,53 @@ static void gen_function(Gen *g, int fi) {
     g->line = ch->count > 0 ? ch->lines[0] : 0;
 
     memset(g->local_set, 0, sizeof g->local_set);
+    int max_local = 0;
+    bool uses_asm = false;
     for (int off = 0; off < ch->count; off += op_size(ch->code[off])) {
-        if (ch->code[off] == OP_SET_LOCAL) g->local_set[ch->code[off + 1]] = true;
+        uint8_t op = ch->code[off];
+        if (op == OP_SET_LOCAL) {
+            int sl = ch->code[off + 1];
+            g->local_set[sl] = true;
+            if (sl > max_local) max_local = sl;
+        } else if (op == OP_GET_LOCAL) {
+            int sl = ch->code[off + 1];
+            if (sl > max_local) max_local = sl;
+        } else if (op == OP_GET_GLOBAL) {
+            Global *gl = &g->vm->globals[ch->code[off + 1]];
+            if (gl->value.type == VAL_NATIVE && gl->defined && strcmp(gl->name, "asm") == 0) uses_asm = true;
+        }
     }
+    if (fn->arity > max_local) max_local = fn->arity;
+    g->n_promo = uses_asm ? 0 : (max_local > PROMO_COUNT ? PROMO_COUNT : max_local);
 
-    /* jump targets and the stack depth/kind expected there */
+    /* jump targets, loop ranges, and the stack depth/kind expected there */
     bool *target = calloc((size_t)ch->count + 1, 1);
+    bool *in_loop = calloc((size_t)ch->count + 1, 1);
     int *tdepth = malloc(((size_t)ch->count + 1) * sizeof(int));
     Kind *tkind = calloc((size_t)ch->count + 1, sizeof(Kind));
     for (int i = 0; i <= ch->count; i++) tdepth[i] = -1;
     for (int off = 0; off < ch->count; off += op_size(ch->code[off])) {
         uint8_t op = ch->code[off];
-        if (op == OP_JUMP || op == OP_JUMP_IF_FALSE || op == OP_LOOP) target[jump_target(ch, off)] = true;
+        if (op == OP_JUMP || op == OP_JUMP_IF_FALSE || op == OP_LOOP) {
+            int tgt = jump_target(ch, off);
+            target[tgt] = true;
+            if (op == OP_LOOP) {
+                for (int k = tgt; k <= off; k++) in_loop[k] = true;
+            }
+        }
     }
 
+    int frame_bytes = g->n_promo > 0 ? 32 : 16;
     out(g, "\n    .align 2\n    .word %d\njl_fn_%d:   # %s\n", fn->arity, fi, fn->name);
-    out(g, "    addi sp, sp, -16\n    sw ra, 12(sp)\n    sw s0, 8(sp)\n    addi s0, s1, %d\n", -4 * (fn->arity + 1));
+    out(g, "    addi sp, sp, -%d\n    sw ra, %d(sp)\n    sw s0, %d(sp)\n",
+        frame_bytes, frame_bytes - 4, frame_bytes - 8);
+    for (int p = 0; p < g->n_promo; p++) {
+        out(g, "    sw %s, %d(sp)\n", PROMO_REGS[p], frame_bytes - 12 - 4 * p);
+    }
+    out(g, "    addi s0, s1, %d\n", -4 * (fn->arity + 1));
+    for (int p = 0; p < fn->arity && p < g->n_promo; p++) {
+        out(g, "    lw %s, %d(s0)\n", PROMO_REGS[p], 4 * (p + 1));
+    }
     out(g, "    la t0, jl_depth\n    lw t1, 0(t0)\n    addi t1, t1, 1\n    sw t1, 0(t0)\n    li t2, %d\n", JL_FRAMES_MAX + 1);
     out(g, "    # @line %d\n", g->line);
     {
@@ -990,27 +1108,59 @@ static void gen_function(Gen *g, int fi) {
                 pop_kinds(g, 1);
             }
             break;
+        case OP_DUP: {
+            Kind k = top(g, 0);
+            VSlot v = g->vstack[g->depth - 1];
+            if (v.loc == V_IMM) {
+                vpush_imm(g, v.imm, k);
+            } else if (v.loc == V_SREG) {
+                vpush_sreg(g, v.reg, k);
+            } else if (v.loc == V_REG) {
+                int src = v.reg;
+                int r = alloc_reg(g);
+                if (g->depth - 1 < g->mem_depth) out(g, "    lw %s, -4(s1)\n", CACHE_REGS[r]);
+                else out(g, "    mv %s, %s\n", CACHE_REGS[r], CACHE_REGS[src]);
+                vpush_reg(g, r, k);
+            } else {
+                int r = alloc_reg(g);
+                out(g, "    lw %s, -4(s1)\n", CACHE_REGS[r]);
+                vpush_reg(g, r, k);
+            }
+            break;
+        }
         case OP_DUP2:
             spill_all(g);
             out(g, "    lw t0, -8(s1)\n    lw t1, -4(s1)\n    sw t0, 0(s1)\n    sw t1, 4(s1)\n    addi s1, s1, 8\n");
             vpush_mem(g, top(g, 1));
             vpush_mem(g, top(g, 1));
+            sync_promo_at(g, g->depth - 2, -8);
+            sync_promo_at(g, g->depth - 1, -4);
             break;
         case OP_GET_LOCAL: {
             int slot = ch->code[off + 1];
             Kind k = slot < g->depth ? read_kind(g->kinds[slot], g->local_set[slot]) : kind_of(K_INT);
             if (slot < g->mem_depth) {
-                int r = alloc_reg(g);
-                out(g, "    lw %s, %d(s0)\n", CACHE_REGS[r], 4 * slot);
-                vpush_reg(g, r, k);
+                if (slot >= 1 && slot <= g->n_promo) {
+                    vpush_sreg(g, slot - 1, k);
+                } else {
+                    int r = alloc_reg(g);
+                    out(g, "    lw %s, %d(s0)\n", CACHE_REGS[r], 4 * slot);
+                    vpush_reg(g, r, k);
+                }
             } else if (slot < g->depth && g->vstack[slot].loc == V_IMM) {
                 vpush_imm(g, g->vstack[slot].imm, k);
+            } else if (slot < g->depth && g->vstack[slot].loc == V_SREG) {
+                vpush_sreg(g, g->vstack[slot].reg, k);
             } else if (slot < g->depth && g->vstack[slot].loc == V_REG) {
                 int src = g->vstack[slot].reg;
                 int r = alloc_reg(g);
                 /* alloc_reg may have spilled `slot` to memory; check again. */
-                if (slot < g->mem_depth) out(g, "    lw %s, %d(s0)\n", CACHE_REGS[r], 4 * slot);
-                else out(g, "    mv %s, %s\n", CACHE_REGS[r], CACHE_REGS[src]);
+                if (slot < g->mem_depth) {
+                    if (slot >= 1 && slot <= g->n_promo) out(g, "    mv %s, %s\n", CACHE_REGS[r], PROMO_REGS[slot - 1]);
+                    else out(g, "    lw %s, %d(s0)\n", CACHE_REGS[r], 4 * slot);
+                } else {
+                    out(g, "    mv %s, %s\n", CACHE_REGS[r], CACHE_REGS[src]);
+                }
                 vpush_reg(g, r, k);
             } else {
                 int r = alloc_reg(g);
@@ -1031,7 +1181,27 @@ static void gen_function(Gen *g, int fi) {
             }
             if (slot >= g->mem_depth) spill_to(g, slot + 1);
             bool drop = off + 2 < ch->count && !target[off + 2] && ch->code[off + 2] == OP_POP;
-            if (drop) {
+            if (slot >= 1 && slot <= g->n_promo) {
+                int sreg = slot - 1;
+                materialize_sreg(g, sreg, drop ? g->depth - 1 : g->depth);
+                const char *preg = PROMO_REGS[sreg];
+                if (drop) {
+                    if (g->vstack[g->depth - 1].loc == V_IMM) {
+                        int32_t imm = g->vstack[g->depth - 1].imm;
+                        pop_kinds(g, 1);
+                        out(g, "    li %s, %d\n", preg, (int)imm);
+                    } else {
+                        int fr;
+                        const char *r = vpop_reg(g, preg, &fr);
+                        if (strcmp(r, preg) != 0) out(g, "    mv %s, %s\n", preg, r);
+                        free_reg(g, fr);
+                    }
+                    off += 1; /* consume fused OP_POP */
+                } else {
+                    const char *r = vpeek_reg(g, "t0");
+                    if (strcmp(r, preg) != 0) out(g, "    mv %s, %s\n", preg, r);
+                }
+            } else if (drop) {
                 int fr;
                 const char *r = vpop_reg(g, "t0", &fr);
                 out(g, "    sw %s, %d(s0)\n", r, 4 * slot);
@@ -1364,14 +1534,60 @@ static void gen_function(Gen *g, int fi) {
             break;
         }
         case OP_CALL: {
-            spill_all(g);
             int argc = ch->code[off + 1];
             Kind callee = top(g, argc);
+            /* Static .bss array(n) / array(n, init) at top level outside loops. */
+            if (callee.kind == K_NATIVE && strcmp(g->vm->natives[callee.index].name, "array") == 0) {
+                if (argc < 1 || argc > 2) {
+                    error(g, "array() takes 1 or 2 arguments (size, and optional initial value)");
+                    break;
+                }
+                if (fi != g->first_fn || in_loop[off]) {
+                    error(g, "arrays aren't available inside functions or loops in native code yet (native programs have no heap); run it with `jlang run` instead");
+                    break;
+                }
+                VSlot nslot = g->vstack[g->depth - argc];
+                if (nslot.loc != V_IMM || nslot.imm < 0 || nslot.imm > 4096) {
+                    error(g, "in native code, array(n) requires a constant size 0..4096 at top level (run it with `jlang run` for dynamic sizes)");
+                    break;
+                }
+                int32_t count = nslot.imm;
+                Kind fill_k = argc == 2 ? top(g, 0) : kind_of(K_INT);
+                if (argc == 2 && (fill_k.kind == K_STR || fill_k.kind == K_ARR || fill_k.kind == K_STRUCT)) {
+                    error(g, "in native code, array(n, value) only supports integer or bool initial values");
+                    break;
+                }
+                int id = add_static(g, (uint32_t)count + 1u);
+                int ffill = -1;
+                const char *rfill = "zero";
+                bool has_nonzero_fill = false;
+                if (argc == 2) {
+                    if (g->vstack[g->depth - 1].loc == V_IMM && g->vstack[g->depth - 1].imm == 0) {
+                        pop_kinds(g, 1);
+                    } else {
+                        rfill = vpop_reg(g, "t1", &ffill);
+                        has_nonzero_fill = true;
+                    }
+                }
+                pop_kinds(g, 2); /* count + callee */
+                int dst = reuse_or_alloc(g, -1, -1);
+                out(g, "    la %s, jl_static_%d\n    li t0, %d\n    sw t0, 0(%s)\n",
+                    CACHE_REGS[dst], id, (int)count, CACHE_REGS[dst]);
+                if (has_nonzero_fill && count > 0) {
+                    int lp = new_label(g);
+                    out(g, "    addi t2, %s, 4\n    li t0, %d\n.Lok%d:\n    sw %s, 0(t2)\n    addi t2, t2, 4\n    addi t0, t0, -1\n    bnez t0, .Lok%d\n",
+                        CACHE_REGS[dst], (int)count, lp, rfill, lp);
+                }
+                free_reg(g, ffill);
+                vpush_reg(g, dst, kind_of(K_ARR));
+                break;
+            }
+            spill_all(g);
             if (callee.kind != K_NATIVE) {
                 bool ok = true;
                 for (int a = 0; a < argc && ok; a++) {
                     Kind k = top(g, argc - 1 - a);
-                    if (k.kind == K_STR || k.kind == K_BOOL || k.kind == K_NIL) {
+                    if (k.kind == K_STR || k.kind == K_BOOL || k.kind == K_NIL || k.kind == K_ARR || k.kind == K_STRUCT) {
                         error(g, "in native code, functions can only be given numbers and functions, but argument %d "
                                  "is a %s (run it with `jlang run` to pass any value)",
                               a + 1, kind_name(k));
@@ -1391,7 +1607,9 @@ static void gen_function(Gen *g, int fi) {
                 out(g, "    call jl_fn_%d\n", callee.index);
                 pop_kinds(g, argc + 1);
                 vpush_mem(g, kind_of(g->returns_nil[callee.index] ? K_NIL : g->returns_bool[callee.index] ? K_BOOL : K_INT));
-            } else if (callee.kind == K_STR || callee.kind == K_BOOL || callee.kind == K_NIL) {
+                sync_promo_top(g);
+            } else if (callee.kind == K_STR || callee.kind == K_BOOL || callee.kind == K_NIL ||
+                       callee.kind == K_ARR || callee.kind == K_STRUCT) {
                 error(g, "this value can't be called (only functions can be called)");
             } else {
                 out(g, "    lw t2, %d(s1)\n", -4 * (argc + 1));
@@ -1401,12 +1619,14 @@ static void gen_function(Gen *g, int fi) {
                 out(g, "    jalr ra, 0(t2)\n");
                 pop_kinds(g, argc + 1);
                 vpush_mem(g, kind_of(K_INT));
+                sync_promo_top(g);
             }
             break;
         }
         case OP_RETURN: {
             if (fi != g->first_fn && !g->returns_nil[fi] &&
-                (top(g, 0).kind == K_STR || (top(g, 0).kind == K_BOOL && !g->returns_bool[fi]))) {
+                (top(g, 0).kind == K_STR || top(g, 0).kind == K_ARR || top(g, 0).kind == K_STRUCT ||
+                 (top(g, 0).kind == K_BOOL && !g->returns_bool[fi]))) {
                 error(g, "in native code, functions can only return numbers, but this returns a %s "
                          "(run it with `jlang run` to return any value)",
                       kind_name(top(g, 0)));
@@ -1417,7 +1637,11 @@ static void gen_function(Gen *g, int fi) {
             out(g, "    sw %s, 0(s0)\n    addi s1, s0, 4\n", r);
             free_reg(g, fr);
             out(g, "    la t1, jl_depth\n    lw t2, 0(t1)\n    addi t2, t2, -1\n    sw t2, 0(t1)\n");
-            out(g, "    lw ra, 12(sp)\n    lw s0, 8(sp)\n    addi sp, sp, 16\n    ret\n");
+            for (int p = 0; p < g->n_promo; p++) {
+                out(g, "    lw %s, %d(sp)\n", PROMO_REGS[p], frame_bytes - 12 - 4 * p);
+            }
+            out(g, "    lw ra, %d(sp)\n    lw s0, %d(sp)\n    addi sp, sp, %d\n    ret\n",
+                frame_bytes - 4, frame_bytes - 8, frame_bytes);
             g->depth = 0;
             g->mem_depth = 0;
             g->reg_used = 0;
@@ -1427,6 +1651,20 @@ static void gen_function(Gen *g, int fi) {
         case OP_INDEX_GET:
             if (top(g, 1).kind == K_STR) {
                 error(g, "indexing strings isn't available in native code yet");
+                break;
+            }
+            if (top(g, 1).kind == K_ARR) {
+                Kind arr_k = top(g, 1);
+                const char *ra, *rb;
+                int fa, fb;
+                vpop_two(g, &ra, &rb, &fa, &fb);
+                out(g, "    lw t2, 0(%s)\n", ra);
+                int ok = new_label(g);
+                out(g, "    bltu %s, t2, .Lok%d\n    li a0, %d\n    mv a1, %s\n    mv a2, t2\n    j jl_rt_trap_bounds\n.Lok%d:\n",
+                    rb, ok, g->line, rb, ok);
+                int dst = reuse_or_alloc(g, fa, fb);
+                out(g, "    slli t2, %s, 2\n    add t2, %s, t2\n    lw %s, 4(t2)\n", rb, ra, CACHE_REGS[dst]);
+                vpush_reg(g, dst, arr_k.index == 1 ? kind_of(K_ARR) : kind_of(K_INT));
                 break;
             }
             if (g->vstack[g->depth - 1].loc == V_IMM && g->vstack[g->depth - 1].imm >= 0 && g->vstack[g->depth - 1].imm < 32) {
@@ -1457,6 +1695,19 @@ static void gen_function(Gen *g, int fi) {
                 error(g, "strings are read-only");
                 break;
             }
+            if (top(g, 2).kind == K_ARR) {
+                Kind arr_k = top(g, 2);
+                spill_all(g);
+                int ok = new_label(g);
+                out(g, "    lw t0, -12(s1)\n    lw t1, -8(s1)\n    lw t3, -4(s1)\n    lw t2, 0(t0)\n");
+                out(g, "    bltu t1, t2, .Lok%d\n    li a0, %d\n    mv a1, t1\n    mv a2, t2\n    j jl_rt_trap_bounds\n.Lok%d:\n",
+                    ok, g->line, ok);
+                out(g, "    slli t2, t1, 2\n    add t2, t0, t2\n    sw t3, 4(t2)\n    addi s1, s1, -8\n");
+                pop_kinds(g, 3);
+                vpush_mem(g, arr_k);
+                sync_promo_top(g);
+                break;
+            }
             spill_all(g);
             out(g, "    lw t0, -12(s1)\n    lw t1, -8(s1)\n    lw t3, -4(s1)\n");
             trap_num_unless(g, "sltiu t2, t1, 32\n    bnez t2", "bit ", "t1", " doesn't exist: an int has bits 0..31");
@@ -1465,8 +1716,22 @@ static void gen_function(Gen *g, int fi) {
             out(g, "    sw t0, -12(s1)\n    addi s1, s1, -8\n");
             pop_kinds(g, 3);
             vpush_mem(g, kind_of(K_INT));
+            sync_promo_top(g);
             break;
         case OP_INDEX_SET:
+            if (top(g, 2).kind == K_ARR) {
+                Kind val_k = top(g, 0);
+                spill_all(g);
+                int ok = new_label(g);
+                out(g, "    lw t0, -12(s1)\n    lw t1, -8(s1)\n    lw t3, -4(s1)\n    lw t2, 0(t0)\n");
+                out(g, "    bltu t1, t2, .Lok%d\n    li a0, %d\n    mv a1, t1\n    mv a2, t2\n    j jl_rt_trap_bounds\n.Lok%d:\n",
+                    ok, g->line, ok);
+                out(g, "    slli t2, t1, 2\n    add t2, t0, t2\n    sw t3, 4(t2)\n    sw t3, -12(s1)\n    addi s1, s1, -8\n");
+                pop_kinds(g, 3);
+                vpush_mem(g, val_k);
+                sync_promo_top(g);
+                break;
+            }
             error(g, "can't change a bit of a temporary value; store it in a variable first");
             break;
         case OP_SLICE_GET:
@@ -1475,6 +1740,7 @@ static void gen_function(Gen *g, int fi) {
             out(g, "    sw a0, -12(s1)\n    addi s1, s1, -8\n");
             pop_kinds(g, 3);
             vpush_mem(g, kind_of(K_INT));
+            sync_promo_top(g);
             break;
         case OP_SLICE_UPDATE:
             spill_all(g);
@@ -1482,34 +1748,137 @@ static void gen_function(Gen *g, int fi) {
             out(g, "    sw a0, -16(s1)\n    addi s1, s1, -12\n");
             pop_kinds(g, 4);
             vpush_mem(g, kind_of(K_INT));
+            sync_promo_top(g);
             break;
         case OP_ON:
             spill_all(g);
             out(g, "    addi s1, s1, -8\n");
             pop_kinds(g, 2);
             break;
-        case OP_STRUCT:
-        case OP_INIT_FIELD:
-        case OP_GET_FIELD:
-        case OP_SET_FIELD:
-        case OP_DUP:
-            error(g, "structs aren't available in native code yet (native programs have no heap); "
-                     "run it with `jlang run` instead");
+        case OP_STRUCT: {
+            if (fi != g->first_fn || in_loop[off]) {
+                error(g, "structs aren't available inside functions or loops in native code yet (native programs have no heap); "
+                         "run it with `jlang run` instead");
+                break;
+            }
+            uint16_t type = u16_at(ch->code, off + 1);
+            const StructDef *d = &g->vm->prog.structs[type];
+            int id = add_static(g, (uint32_t)d->field_count);
+            int dst = alloc_reg(g);
+            out(g, "    la %s, jl_static_%d\n", CACHE_REGS[dst], id);
+            vpush_reg(g, dst, (Kind){K_STRUCT, type});
             break;
+        }
+        case OP_INIT_FIELD: {
+            uint8_t slot = ch->code[off + 1];
+            int fv;
+            const char *rv = vpop_reg(g, "t0", &fv);
+            const char *rb = vpeek_reg(g, "t1");
+            out(g, "    sw %s, %d(%s)\n", rv, 4 * (int)slot, rb);
+            free_reg(g, fv);
+            break;
+        }
+        case OP_GET_FIELD: {
+            uint16_t name_si = u16_at(ch->code, off + 1);
+            Kind sk = top(g, 0);
+            if (sk.kind != K_STRUCT) {
+                error(g, "can't read field '%s' of a %s", g->vm->prog.strs[name_si].chars, kind_name(sk));
+                break;
+            }
+            const StructDef *d = &g->vm->prog.structs[sk.index];
+            int slot = -1;
+            for (int f = 0; f < d->field_count; f++) {
+                if (d->fields[f] == name_si) {
+                    slot = f;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                error(g, "%s has no field '%s'", g->vm->prog.strs[d->name].chars, g->vm->prog.strs[name_si].chars);
+                break;
+            }
+            int fb;
+            const char *rb = vpop_reg(g, "t0", &fb);
+            int dst = reuse_or_alloc(g, fb, -1);
+            out(g, "    lw %s, %d(%s)\n", CACHE_REGS[dst], 4 * slot, rb);
+            vpush_reg(g, dst, kind_of(K_INT));
+            break;
+        }
+        case OP_SET_FIELD: {
+            uint16_t name_si = u16_at(ch->code, off + 1);
+            Kind sk = top(g, 1);
+            if (sk.kind != K_STRUCT) {
+                error(g, "can't set field '%s' of a %s", g->vm->prog.strs[name_si].chars, kind_name(sk));
+                break;
+            }
+            const StructDef *d = &g->vm->prog.structs[sk.index];
+            int slot = -1;
+            for (int f = 0; f < d->field_count; f++) {
+                if (d->fields[f] == name_si) {
+                    slot = f;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                error(g, "%s has no field '%s'", g->vm->prog.strs[d->name].chars, g->vm->prog.strs[name_si].chars);
+                break;
+            }
+            Kind vk = top(g, 0);
+            const char *rb, *rv;
+            int fb, fv;
+            vpop_two(g, &rb, &rv, &fb, &fv);
+            out(g, "    sw %s, %d(%s)\n", rv, 4 * slot, rb);
+            if (fv >= 0) {
+                free_reg(g, fb);
+                vpush_reg(g, fv, vk);
+            } else {
+                int dst = reuse_or_alloc(g, fb, -1);
+                if (strcmp(CACHE_REGS[dst], rv) != 0) out(g, "    mv %s, %s\n", CACHE_REGS[dst], rv);
+                vpush_reg(g, dst, vk);
+            }
+            break;
+        }
         case OP_TIMER:
             error(g, "every and after blocks aren't available in native code yet; "
                      "run it with `jlang run` instead");
             break;
-        case OP_ARRAY:
-            error(g, "arrays aren't available in native code yet (native programs have no heap); "
-                     "run it with `jlang run` instead");
+        case OP_ARRAY: {
+            if (fi != g->first_fn || in_loop[off]) {
+                error(g, "arrays aren't available inside functions or loops in native code yet (native programs have no heap); "
+                         "run it with `jlang run` instead");
+                break;
+            }
+            uint16_t count = u16_at(ch->code, off + 1);
+            bool all_arr = count > 0;
+            for (int i = 0; i < (int)count; i++) {
+                Kind ek = top(g, (int)count - 1 - i);
+                if (ek.kind != K_ARR) all_arr = false;
+                if (ek.kind == K_STR || ek.kind == K_STRUCT) {
+                    error(g, "in native code, static arrays only hold ints, bools or nested arrays");
+                    break;
+                }
+            }
+            if (g->failed) break;
+            spill_all(g);
+            int id = add_static(g, (uint32_t)count + 1u);
+            out(g, "    la t0, jl_static_%d\n    li t1, %u\n    sw t1, 0(t0)\n", id, (unsigned)count);
+            for (int i = 0; i < (int)count; i++) {
+                out(g, "    lw t1, %d(s1)\n    sw t1, %d(t0)\n", -4 * ((int)count - i), 4 * (i + 1));
+            }
+            if (count > 0) out(g, "    addi s1, s1, %d\n", -4 * (int)count);
+            pop_kinds(g, (int)count);
+            int dst = alloc_reg(g);
+            out(g, "    mv %s, t0\n", CACHE_REGS[dst]);
+            vpush_reg(g, dst, (Kind){K_ARR, all_arr ? 1 : 0});
             break;
+        }
         default:
             error(g, "instruction %u isn't supported in native code", op);
         }
         off += op_size(op);
     }
     free(target);
+    free(in_loop);
     free(tdepth);
     free(tkind);
 }
@@ -1670,7 +2039,31 @@ static const char *RUNTIME3 =
     "jl_rt_fd_neg:\n"
     "    bnez t4, jl_rt_fd_nsat\n    li t0, -2147483648\n    bgeu t3, t0, jl_rt_fd_nsat\n"
     "    neg a0, t3\n    ret\n"
-    "jl_rt_fd_nsat:\n    li a0, -2147483648\n    ret\n";
+    "jl_rt_fd_nsat:\n    li a0, -2147483648\n    ret\n"
+    "\n# jl_rt_trap_bounds(a0 = line, a1 = idx, a2 = len)\n"
+    "jl_rt_trap_bounds:\n"
+    "    mv s2, a0\n    mv s3, a1\n    mv s4, a2\n"
+    "    la a0, jl_rt_msg_prefix\n    call jl_rt_puts\n"
+    "    mv a0, s2\n    call jl_rt_putint\n"
+    "    la a0, jl_rt_msg_colon\n    call jl_rt_puts\n"
+    "    la a0, jl_rt_msg_idx1\n    call jl_rt_puts\n"
+    "    mv a0, s3\n    call jl_rt_putint\n"
+    "    bnez s4, jl_rt_tb_nonempty\n"
+    "    la a0, jl_rt_msg_idx_empty\n    call jl_rt_puts\n"
+    "    j jl_rt_tb_done\n"
+    "jl_rt_tb_nonempty:\n"
+    "    la a0, jl_rt_msg_idx2\n    call jl_rt_puts\n"
+    "    mv a0, s4\n    call jl_rt_putint\n"
+    "    la a0, jl_rt_msg_idx3\n"
+    "    li t0, 1\n    bne s4, t0, jl_rt_tb_pl\n"
+    "    la a0, jl_rt_msg_idx3s\n"
+    "jl_rt_tb_pl:\n"
+    "    call jl_rt_puts\n"
+    "    addi a0, s4, -1\n    call jl_rt_putint\n"
+    "jl_rt_tb_done:\n"
+    "    li a0, 10\n    call jl_hal_putc\n"
+    "    li a0, 70\n    call jl_hal_halt\n"
+    "    j jl_rt_hang\n";
 
 static const char *SIM_HAL =
     "\n# ---- HAL for the simulated board (jlang emu) -----------------\n"
@@ -1823,6 +2216,11 @@ char *rv_generate(JlVM *vm, const char *source, const RvGenOptions *opt) {
         emit_string(g, "jl_rt_msg_fit1", " doesn't fit in ", 16);
         emit_string(g, "jl_rt_msg_fit2", " bits (the max is ", 18);
         emit_string(g, "jl_rt_msg_fit2s", " bit (the max is ", 17);
+        emit_string(g, "jl_rt_msg_idx1", "index ", 6);
+        emit_string(g, "jl_rt_msg_idx_empty", " is out of bounds: this array is empty", 38);
+        emit_string(g, "jl_rt_msg_idx2", " is out of bounds: this array has ", 34);
+        emit_string(g, "jl_rt_msg_idx3", " items, so valid indexes are 0..", 32);
+        emit_string(g, "jl_rt_msg_idx3s", " item, so valid indexes are 0..", 31);
     }
     for (int i = 0; i < vm->prog.str_count; i++) {
         if (!g->str_used[i]) continue;
@@ -1838,13 +2236,18 @@ char *rv_generate(JlVM *vm, const char *source, const RvGenOptions *opt) {
 
     out(g, "\n    .data\n    .align 2\njl_vsp:\n    .word jl_vstack\njl_depth:\n    .word 0\n");
     for (int i = 0; i < vm->global_count; i++) out(g, "jl_g_%d:\n    .word 0\n", i);
-    out(g, "\n    .bss\n    .align 2\njl_vstack:\n    .zero 16384\njl_vstack_end:\n");
+    out(g, "\n    .bss\n    .align 2\n");
+    for (int i = 0; i < g->nstatics; i++) {
+        out(g, "jl_static_%d:\n    .zero %u\n", i, (unsigned)(g->static_words[i] * 4u));
+    }
+    out(g, "jl_vstack:\n    .zero 16384\njl_vstack_end:\n");
 
     char *result = g->failed ? NULL : g->buf;
     if (g->failed) free(g->buf);
     for (int i = 0; i < g->nlits; i++) free(g->lits[i]);
     free(g->lits);
     free(g->lit_lens);
+    free(g->static_words);
     free(g->str_used);
     free(g->returns_nil);
     free(g->returns_bool);

@@ -18,6 +18,7 @@
 #include "port.h"
 
 #include "board_sim.h"
+#include "fmt.h"
 #include "jlang.h"
 #include "rv.h"
 #include "rv_codegen.h"
@@ -42,6 +43,8 @@ typedef struct {
     uint64_t max_cycles;
     bool stats;
     bool no_leak_check;
+    bool fmt_write;         /* jlang fmt -w / --write */
+    bool fmt_check;         /* jlang fmt --check */
     const char *out_path;
     bool listing;
     bool print_asm;
@@ -67,6 +70,7 @@ static void usage(FILE *f) {
         "  jlang run <file.jlang>        run a script on the simulated board\n"
         "  jlang test <file.jlang...>    run built-in test \"name\" { ... } blocks with leak checking\n"
         "  jlang check <file.jlang>      check for errors without running\n"
+        "  jlang fmt <file.jlang...>     format source code (-w writes in place, --check checks)\n"
         "  jlang xray <file.jlang>       run, showing every instruction and the stack\n"
         "  jlang dis <file.jlang>        print the compiled bytecode\n"
         "  jlang repl                    interactive prompt\n"
@@ -157,6 +161,10 @@ static bool parse_args(int argc, char **argv, Options *o) {
             o->board.realtime = true;
         } else if (strcmp(a, "--no-leak-check") == 0) {
             o->no_leak_check = true;
+        } else if (strcmp(a, "--write") == 0 || strcmp(a, "-w") == 0) {
+            o->fmt_write = true;
+        } else if (strcmp(a, "--check") == 0) {
+            o->fmt_check = true;
         } else if (strcmp(a, "--listing") == 0) {
             o->listing = true;
         } else if (strcmp(a, "--asm") == 0) {
@@ -293,7 +301,8 @@ static bool parse_args(int argc, char **argv, Options *o) {
         } else if (o->file == NULL) {
             o->file = a;
             o->files[o->file_count++] = a;
-        } else if (strcmp(o->command, "test") == 0 && o->file_count < MAX_FILES) {
+        } else if ((strcmp(o->command, "test") == 0 || strcmp(o->command, "fmt") == 0) &&
+                   o->file_count < MAX_FILES) {
             o->files[o->file_count++] = a;
         } else {
             fprintf(stderr, "jlang: unexpected argument '%s'\n", a);
@@ -453,9 +462,7 @@ static int native(const Options *o, bool emulate) {
             fprintf(stderr, "jlang: can't write '%s': %s\n", o->bin_path, strerror(errno));
             code = EXIT_USAGE;
         } else {
-            uint32_t end = img.size;
-            uint32_t bss;
-            if (rv_symbol(&img, "jl_vstack", &bss)) end = bss;
+            uint32_t end = img.bss_start;
             fwrite(img.image, 1, end, f);
             fclose(f);
         }
@@ -816,6 +823,72 @@ static int new_project(const char *name) {
     return 0;
 }
 
+static char *read_stdin(void) {
+    size_t cap = 4096, len = 0;
+    char *buf = malloc(cap);
+    if (buf == NULL) return NULL;
+    size_t n;
+    while ((n = fread(buf + len, 1, cap - len - 1, stdin)) > 0) {
+        len += n;
+        if (len + 1 == cap) {
+            cap *= 2;
+            char *bigger = realloc(buf, cap);
+            if (bigger == NULL) {
+                free(buf);
+                return NULL;
+            }
+            buf = bigger;
+        }
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+static int fmt_command(const Options *o) {
+    int unformatted = 0;
+    for (int f = 0; f < o->file_count; f++) {
+        const char *path = o->files[f];
+        bool is_stdin = strcmp(path, "-") == 0;
+        char *src = is_stdin ? read_stdin() : read_file(path);
+        if (src == NULL) {
+            fprintf(stderr, "jlang: can't read '%s': %s\n", path, strerror(errno));
+            return EXIT_NOFILE;
+        }
+        char err[256];
+        char *formatted = jl_format(src, err, (int)sizeof err);
+        if (formatted == NULL) {
+            fprintf(stderr, "jlang fmt: %s: %s\n", path, err);
+            free(src);
+            return EXIT_COMPILE;
+        }
+        bool changed = strcmp(src, formatted) != 0;
+        if (o->fmt_check) {
+            if (changed) {
+                printf("%s\n", path);
+                unformatted++;
+            }
+        } else if (o->fmt_write && !is_stdin) {
+            if (changed) {
+                FILE *out = fopen(path, "wb");
+                if (out == NULL) {
+                    fprintf(stderr, "jlang: can't write '%s': %s\n", path, strerror(errno));
+                    free(formatted);
+                    free(src);
+                    return EXIT_RUNTIME;
+                }
+                fwrite(formatted, 1, strlen(formatted), out);
+                fclose(out);
+            }
+        } else {
+            fputs(formatted, stdout);
+        }
+        free(formatted);
+        free(src);
+    }
+    if (o->fmt_check && unformatted > 0) return 1;
+    return 0;
+}
+
 int main(int argc, char **argv) {
     Options o;
     if (!parse_args(argc, argv, &o)) {
@@ -838,7 +911,7 @@ int main(int argc, char **argv) {
 
     bool known = strcmp(cmd, "run") == 0 || strcmp(cmd, "xray") == 0 ||
                  strcmp(cmd, "check") == 0 || strcmp(cmd, "dis") == 0 ||
-                 strcmp(cmd, "test") == 0 ||
+                 strcmp(cmd, "test") == 0 || strcmp(cmd, "fmt") == 0 ||
                  strcmp(cmd, "emu") == 0 || strcmp(cmd, "build") == 0 || strcmp(cmd, "asm") == 0 ||
                  strcmp(cmd, "wcet") == 0 || strcmp(cmd, "svd") == 0;
     if (!known) {
@@ -852,6 +925,7 @@ int main(int argc, char **argv) {
     }
     if (strcmp(cmd, "run") == 0) return run_file(&o, false);
     if (strcmp(cmd, "test") == 0) return test_command(&o);
+    if (strcmp(cmd, "fmt") == 0) return fmt_command(&o);
     if (strcmp(cmd, "emu") == 0) return native(&o, true);
     if (strcmp(cmd, "svd") == 0) return svd_command(&o);
     if (strcmp(cmd, "wcet") == 0) {

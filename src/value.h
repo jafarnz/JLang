@@ -26,7 +26,8 @@ typedef enum {
     VAL_FN,     /* a function written in JLang */
     VAL_NATIVE, /* a built-in function written in C */
     VAL_ARR,    /* a list of values on the JLang heap */
-    VAL_STRUCT  /* named fields on the JLang heap; tag is the struct type */
+    VAL_STRUCT, /* named fields on the JLang heap; tag is the struct type */
+    VAL_RING    /* fixed-capacity ring buffer on the JLang heap */
 } ValueType;
 
 /*
@@ -111,6 +112,14 @@ static inline Value struct_val(HeapRef ref, uint16_t type) {
 static inline Value arr_val(HeapRef ref) {
     Value v = nil_val();
     v.type = VAL_ARR;
+    v.on_heap = 1;
+    v.as.ref = ref;
+    return v;
+}
+
+static inline Value ring_val(HeapRef ref) {
+    Value v = nil_val();
+    v.type = VAL_RING;
     v.on_heap = 1;
     v.as.ref = ref;
     return v;
