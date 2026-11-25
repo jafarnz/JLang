@@ -1,0 +1,7 @@
+// Statements before `use` must run before the imported module's top-level code,
+// and a second `use` of the same module must not re-run its initialization.
+print("before")
+use "order_mod.jlang" as m
+print("after", m.val)
+use "order_mod.jlang" as m2
+print("again", m2.val)

@@ -158,5 +158,19 @@ if [[ "$out" == *"sensor=0x48 display=0x3C temp=-5C frames=1"* ]]; then pass=$((
 out="$("$BIN" run "$TMP/weather_bundled.jlang" --temperature -5 2>&1)"
 if [[ "$out" == *"sensor=0x48 display=0x3C temp=-5C frames=1"* ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: weather_station negative temp bundled run ($out)"; fi
 
+order_expected=$'before\ninit\nafter 42\nagain 42'
+out="$("$BIN" run "$DIR/tests/modules/order_main.jlang" 2>&1)"
+if [[ "$out" == "$order_expected" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: order_main run ($out)"; fi
+
+out="$("$BIN" emu "$DIR/tests/modules/order_main.jlang" 2>&1)"
+if [[ "$out" == "$order_expected" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: order_main emu ($out)"; fi
+
+"$BIN" bundle "$DIR/tests/modules/order_main.jlang" -o "$TMP/order_bundled.jlang" 2>&1
+out="$("$BIN" run "$TMP/order_bundled.jlang" 2>&1)"
+if [[ "$out" == "$order_expected" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: bundled order_main run ($out)"; fi
+
+out="$("$BIN" emu "$TMP/order_bundled.jlang" 2>&1)"
+if [[ "$out" == "$order_expected" ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: bundled order_main emu ($out)"; fi
+
 echo "files: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

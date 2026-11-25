@@ -1,0 +1,3 @@
+// Module with top-level initialization side effect.
+print("init")
+let val = 42

@@ -296,90 +296,43 @@ static void bundle_file(Bundler *b, const char *norm_path, int mod_id) {
         return;
     }
 
-    /* Pass 1: collect top-level declared names in this module (if namespaced)
-       and resolve `use` imports in declaration order. */
+    /* Pass 1: collect top-level declared names in this module (if namespaced).
+       `use` imports are resolved in place during Pass 2 so statement order
+       before and after each `use` matches direct execution. */
     SymName top_syms[B_MAX_SYMS];
     int top_count = 0;
     AliasEntry aliases[B_MAX_ALIASES];
     int alias_count = 0;
 
     int brace = 0;
-    for (int i = 0; i < ntoks && toks[i].type != TOK_EOF; i++) {
-        TokenType t = toks[i].type;
-        if (t == TOK_LBRACE) {
-            brace++;
-            continue;
-        }
-        if (t == TOK_RBRACE) {
-            if (brace > 0) brace--;
-            continue;
-        }
-        if (brace == 0) {
-            if (mod_id > 0 &&
+    if (mod_id > 0) {
+        for (int i = 0; i < ntoks && toks[i].type != TOK_EOF; i++) {
+            TokenType t = toks[i].type;
+            if (t == TOK_LBRACE) {
+                brace++;
+                continue;
+            }
+            if (t == TOK_RBRACE) {
+                if (brace > 0) brace--;
+                continue;
+            }
+            if (brace == 0 &&
                 (t == TOK_LET || t == TOK_FN || t == TOK_CONST || t == TOK_ENUM || t == TOK_STRUCT) &&
                 i + 1 < ntoks && toks[i + 1].type == TOK_IDENT) {
                 add_sym(top_syms, &top_count, B_MAX_SYMS, toks[i + 1].start, toks[i + 1].length);
-            } else if (t == TOK_USE && i + 1 < ntoks && toks[i + 1].type == TOK_STRING) {
-                char rel[256], resolved[512];
-                if (decode_str(&toks[i + 1], rel, sizeof rel) <= 0 ||
-                    !resolve_path(norm_path, rel, resolved, sizeof resolved)) {
-                    bfail(b, "invalid file path in 'use'");
-                    break;
-                }
-                bool has_alias = false;
-                Token atok;
-                memset(&atok, 0, sizeof atok);
-                if (i + 3 < ntoks && tok_is_word(&toks[i + 2], "as") && toks[i + 3].type == TOK_IDENT) {
-                    has_alias = true;
-                    atok = toks[i + 3];
-                }
-                int existing_mod = -1;
-                bool already_loaded = false;
-                for (int u = 0; u < b->used_count; u++) {
-                    if (strcmp(b->used_files[u], resolved) == 0) {
-                        if (has_alias && b->used_mod_ids[u] > 0) {
-                            existing_mod = b->used_mod_ids[u];
-                            already_loaded = true;
-                            break;
-                        }
-                        if (!has_alias && b->used_mod_ids[u] == 0) {
-                            existing_mod = 0;
-                            already_loaded = true;
-                            break;
-                        }
-                    }
-                }
-                int target_mod = existing_mod;
-                if (!already_loaded) {
-                    target_mod = has_alias ? b->next_mod_id++ : 0;
-                    bundle_file(b, resolved, target_mod);
-                    if (b->failed) break;
-                }
-                if (has_alias && alias_count < B_MAX_ALIASES && atok.length < 64) {
-                    memcpy(aliases[alias_count].alias, atok.start, (size_t)atok.length);
-                    aliases[alias_count].alias[atok.length] = '\0';
-                    aliases[alias_count].mod_id = target_mod;
-                    alias_count++;
-                }
             }
         }
     }
 
-    if (b->failed) {
-        free(toks);
-        free(src);
-        b->depth--;
-        return;
-    }
-
     /* Emit a clear module header comment before each inlined file. */
+    if (b->out.len > 0 && b->out.data[b->out.len - 1] != '\n') buf_str(&b->out, "\n");
     if (b->out.len > 0) buf_str(&b->out, "\n");
     buf_str(&b->out, "// --- ");
     buf_str(&b->out, norm_path);
     buf_str(&b->out, " ---\n");
 
-    /* Pass 2: copy source text, stripping `use` directives and rewriting
-       namespaced references and declarations. */
+    /* Pass 2: copy source text, inlining `use` directives at their exact
+       source position and rewriting namespaced references and declarations. */
     const char *cursor = src;
     brace = 0;
     typedef struct {
@@ -423,12 +376,58 @@ static void bundle_file(Bundler *b, const char *norm_path, int mod_id) {
             continue;
         }
 
-        /* Strip top-level `use "..." [as alias]` directives (already inlined). */
+        /* Inline top-level `use "..." [as alias]` directives in place so code
+           before `use` runs before the imported module's top-level code. */
         if (brace == 0 && tk->type == TOK_USE && i + 1 < ntoks && toks[i + 1].type == TOK_STRING) {
             if (tk->start > cursor) buf_add(&b->out, cursor, (size_t)(tk->start - cursor));
+            char rel[256], resolved[512];
+            if (decode_str(&toks[i + 1], rel, sizeof rel) <= 0 ||
+                !resolve_path(norm_path, rel, resolved, sizeof resolved)) {
+                bfail(b, "invalid file path in 'use'");
+                break;
+            }
             int end_i = i + 1;
+            bool has_alias = false;
+            Token atok;
+            memset(&atok, 0, sizeof atok);
             if (i + 3 < ntoks && tok_is_word(&toks[i + 2], "as") && toks[i + 3].type == TOK_IDENT) {
+                has_alias = true;
+                atok = toks[i + 3];
                 end_i = i + 3;
+                if (find_local_alias(aliases, alias_count, atok.start, atok.length) > 0) {
+                    char msg[128];
+                    snprintf(msg, sizeof msg, "module alias '%.*s' is already in use", atok.length, atok.start);
+                    bfail(b, msg);
+                    break;
+                }
+            }
+            int existing_mod = -1;
+            bool already_loaded = false;
+            for (int u = 0; u < b->used_count; u++) {
+                if (strcmp(b->used_files[u], resolved) == 0) {
+                    if (has_alias && b->used_mod_ids[u] > 0) {
+                        existing_mod = b->used_mod_ids[u];
+                        already_loaded = true;
+                        break;
+                    }
+                    if (!has_alias && b->used_mod_ids[u] == 0) {
+                        existing_mod = 0;
+                        already_loaded = true;
+                        break;
+                    }
+                }
+            }
+            int target_mod = existing_mod;
+            if (!already_loaded) {
+                target_mod = has_alias ? b->next_mod_id++ : 0;
+                bundle_file(b, resolved, target_mod);
+                if (b->failed) break;
+            }
+            if (has_alias && alias_count < B_MAX_ALIASES && atok.length < 64) {
+                memcpy(aliases[alias_count].alias, atok.start, (size_t)atok.length);
+                aliases[alias_count].alias[atok.length] = '\0';
+                aliases[alias_count].mod_id = target_mod;
+                alias_count++;
             }
             cursor = toks[end_i].start + toks[end_i].length;
             if (*cursor == '\r') cursor++;
@@ -531,10 +530,12 @@ static void bundle_file(Bundler *b, const char *norm_path, int mod_id) {
     }
 
     /* Copy any remaining trailing comments/text. */
-    size_t tail_len = strlen(cursor);
-    if (tail_len > 0) {
-        buf_add(&b->out, cursor, tail_len);
-        if (cursor[tail_len - 1] != '\n') buf_str(&b->out, "\n");
+    if (!b->failed) {
+        size_t tail_len = strlen(cursor);
+        if (tail_len > 0) {
+            buf_add(&b->out, cursor, tail_len);
+            if (cursor[tail_len - 1] != '\n') buf_str(&b->out, "\n");
+        }
     }
 
     free(toks);
