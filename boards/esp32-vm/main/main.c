@@ -18,6 +18,9 @@
  *                       @jlang stop\n                  stop the running program
  *   board -> computer   @jlang ready <chip>             after boot
  *                       @jlang started / @jlang finished <code>
+ *                       @jlang ack <n>                  received n bytes of a program;
+ *                                                       sent every 1024 bytes, so the
+ *                                                       computer waits before sending more
  */
 #include <stdio.h>
 #include <string.h>
@@ -313,6 +316,8 @@ static bool b_mmio_write8(JlVM *vm, int argc, Value *args, Value *out) {
 
 /* ---- programs from the computer ----------------------------------------- */
 
+#define UPLOAD_ACK 1024 /* bytes of a program between "@jlang ack" replies */
+
 static int read_byte(void) {
     uint8_t c;
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
@@ -348,9 +353,15 @@ static void reader_task(void *arg) {
                 continue;
             }
             char *src = malloc(len + 1);
+            /* Acknowledge every UPLOAD_ACK bytes so the computer only sends
+             * more when there's room for it: real flow control, not timing. */
             for (unsigned i = 0; i < len; i++) {
                 int b = read_byte();
                 if (src) src[i] = (char)b;
+                if ((i + 1) % UPLOAD_ACK == 0 && i + 1 < len) {
+                    printf("@jlang ack %u\n", i + 1);
+                    fflush(stdout);
+                }
             }
             if (src == NULL) {
                 printf("@jlang error out of memory\n");

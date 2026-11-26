@@ -149,6 +149,7 @@ typedef struct {
     char *buf;
     size_t len;
     size_t cap;
+    bool too_big; /* the reply did not fit in cap bytes */
 } HttpBuf;
 
 static esp_err_t http_ev_handler(esp_http_client_event_t *evt) {
@@ -156,6 +157,7 @@ static esp_err_t http_ev_handler(esp_http_client_event_t *evt) {
     if (evt->event_id == HTTP_EVENT_ON_DATA && hb && evt->data && evt->data_len > 0) {
         size_t space = hb->cap - hb->len;
         size_t take = (size_t)evt->data_len < space ? (size_t)evt->data_len : space;
+        if (take < (size_t)evt->data_len) hb->too_big = true;
         if (take > 0) {
             memcpy(hb->buf + hb->len, evt->data, take);
             hb->len += take;
@@ -186,7 +188,7 @@ static bool b_http_get(JlVM *vm, int argc, Value *args, Value *out) {
         *out = nil_val();
         return true;
     }
-    HttpBuf hb = {body, 0, HTTP_MAX_BODY};
+    HttpBuf hb = {body, 0, HTTP_MAX_BODY, false};
 
     esp_http_client_config_t cfg;
     memset(&cfg, 0, sizeof cfg);
@@ -209,6 +211,13 @@ static bool b_http_get(JlVM *vm, int argc, Value *args, Value *out) {
 
     if (err != ESP_OK || status < 200 || status >= 300) {
         free(body);
+        *out = nil_val();
+        return true;
+    }
+    if (hb.too_big) {
+        /* Half a reply would parse as nonsense, so give nil and say why. */
+        free(body);
+        printf("http_get(): the reply is larger than %d bytes, returning nil\n", HTTP_MAX_BODY);
         *out = nil_val();
         return true;
     }
